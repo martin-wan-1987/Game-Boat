@@ -28,21 +28,24 @@ export const SHIP = {
 
 const HALF_L = SHIP.length / 2;
 
-/* station table: t, halfBeam, keelDepth, shapeA, shapeB, flare */
+/* station table: t, halfBeam, keelDepth, shapeA, shapeB, flare
+ * Real carriers have a long PARALLEL MIDBODY at full beam (not the smooth
+ * continuous taper of a yacht), a fine entry at the bow, and only a slight
+ * taper to the transom. */
 const STATIONS = [
-  [0.000, 17.0,  9.2, 3.2, 2.2, 0.00],
-  [0.040, 19.6, 11.4, 3.0, 2.3, 0.01],
-  [0.120, 20.5, 12.0, 3.0, 2.4, 0.02],
-  [0.300, 20.6, 12.2, 3.0, 2.4, 0.03],
-  [0.500, 20.4, 12.2, 2.9, 2.4, 0.05],
-  [0.640, 20.0, 12.1, 2.7, 2.3, 0.08],
-  [0.740, 19.0, 11.8, 2.4, 2.2, 0.12],
-  [0.820, 17.2, 11.0, 2.1, 2.0, 0.18],
-  [0.880, 14.5,  9.9, 1.9, 1.8, 0.24],
-  [0.925, 11.4,  8.6, 1.7, 1.6, 0.28],
-  [0.960,  8.0,  7.0, 1.6, 1.4, 0.30],
-  [0.985,  4.6,  5.2, 1.5, 1.2, 0.26],
-  [1.000,  1.2,  3.2, 1.4, 1.0, 0.10],
+  [0.000, 18.6, 10.8, 3.0, 2.3, 0.00],
+  [0.045, 19.8, 11.6, 3.0, 2.4, 0.00],
+  [0.120, 20.5, 12.0, 3.0, 2.4, 0.00],
+  [0.300, 20.6, 12.2, 3.0, 2.4, 0.00],
+  [0.520, 20.6, 12.2, 3.0, 2.4, 0.00],
+  [0.660, 20.4, 12.1, 2.9, 2.4, 0.02],
+  [0.760, 19.8, 11.9, 2.8, 2.3, 0.05],
+  [0.840, 18.4, 11.2, 2.6, 2.2, 0.10],
+  [0.900, 16.2, 10.3, 2.4, 2.0, 0.16],
+  [0.945, 12.6,  8.9, 2.2, 1.8, 0.22],
+  [0.975,  8.2,  7.0, 2.0, 1.6, 0.24],
+  [0.993,  4.4,  5.0, 1.8, 1.4, 0.18],
+  [1.000,  1.6,  3.6, 1.6, 1.2, 0.06],
 ];
 
 function lerpStations(t) {
@@ -69,7 +72,9 @@ function hullSection(t, u) {
   const [hb, keel, sa, sb, flare] = lerpStations(t);
   const top = SHIP.hullTopY;
   const y = -keel + (top + keel) * u;
-  const w0 = 0.20;
+  // w0 high -> hard bilge then near-vertical sides: a carrier's hull is a
+  // wall-sided box with rounded bilges, not a yacht's soft sections
+  const w0 = 0.34;
   const shape = w0 + (1 - w0) * Math.pow(1 - Math.pow(1 - u, sa), 1 / sb);
   const halfW = hb * shape * (1 + flare * u * u * u);
   return { y, halfW };
@@ -377,7 +382,8 @@ function makeDeckTexture() {
     cat(-26, -16, 46, -10);
     cat(-26, -28, 46, -22);
 
-    // ---- elevators (starboard deck edge + one to port) ------------
+    // ---- elevators: Ford layout — two starboard (fwd + aft of the
+    // island), one port. (The old Nimitz-style middle starboard one is gone.)
     const elev = (x1, x2, z1, z2) => {
       g.save();
       g.globalAlpha = 0.92;
@@ -391,7 +397,6 @@ function makeDeckTexture() {
       g.restore();
     };
     elev(0, 20, 22, 38);
-    elev(-35, -15, 22, 38);
     elev(-110, -90, 22, 38);
     elev(-62, -42, -38, -24);
 
@@ -399,14 +404,14 @@ function makeDeckTexture() {
     g.save();
     g.globalAlpha = 0.55;
     g.fillStyle = '#20232a';
-    rect(30, 85, 24, 38);
+    rect(29, 67, 25, 37);
     g.restore();
 
     // ---- parking spots -------------------------------------------
     g.strokeStyle = 'rgba(238,240,242,0.34)';
     g.lineWidth = Math.max(2, sz(0.4));
     const spots = [
-      [96, 24], [96, 33], [74, 24], [74, 33],
+      [96, 24], [96, 33], [80, 20], [80, 33],
       [-50, 32], [-72, 32], [-94, 32],
       [-52, 15], [-74, 15],
       [42, -33], [20, -31],
@@ -436,9 +441,24 @@ function makeDeckTexture() {
   }, { aniso: 16 });
 }
 
+/** Safety-net grid texture (alpha-only pattern on colour). */
+function makeNetTexture() {
+  return canvasTex(256, 64, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    g.strokeStyle = 'rgba(255,255,255,0.85)';
+    g.lineWidth = 2.2;
+    const step = 16;
+    for (let x = 0; x <= w; x += step) {
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+    }
+    for (let y = 0; y <= h; y += step) {
+      g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+    }
+  }, { wrap: true });
+}
+
 function makeIslandTexture() {
-  return canvasTex(1024, 512, (g, w, h) => {
-    // v=0 is the bottom of the face -> canvas bottom row
+  return canvasTex(1024, 512, (g, w, h) => {    // v=0 is the bottom of the face -> canvas bottom row
     const py = (v) => h * (1 - v);
     g.fillStyle = '#828990';
     g.fillRect(0, 0, w, h);
@@ -651,6 +671,74 @@ function deckShape() {
   return s;
 }
 
+/** Flight-deck half width at longitudinal position x, for the given side
+ *  (+1 starboard / -1 port), by walking the outline polylines. Used to place
+ *  gallery struts, safety nets, deck-edge fittings — and by the spray emitter
+ *  so water is born OUTBOARD of the deck instead of clipping through it. */
+export function deckHalfWidth(x, side) {
+  const pts = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
+    if ((x1 >= x && x >= x2) || (x2 >= x && x >= x1)) {
+      const f = (x - x1) / ((x2 - x1) || 1);
+      return Math.abs(z1 + (z2 - z1) * f);
+    }
+  }
+  return 0;
+}
+
+/** The gallery deck + diagonal struts under the flight-deck overhang. On a
+ *  real carrier the 78 m deck hangs 8-12 m beyond the 41 m hull on both
+ *  sides, carried on sponsons — that shadowed step is what makes the profile
+ *  read as a carrier instead of a barge with a slab on top. */
+function buildGallery(mats) {
+  const g = new THREE.Group();
+
+  // gallery plate: the outline pulled inboard, a deck-slab thickness lower
+  const inner = DECK_OUTLINE.map(([x, z]) => [x * 0.965, z * 0.86]);
+  const shape = new THREE.Shape();
+  inner.forEach(([x, z], i) => { if (i === 0) shape.moveTo(x, z); else shape.lineTo(x, z); });
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: 2.0, bevelEnabled: false });
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, SHIP.deckY - 2.6, 0);
+  const plate = new THREE.Mesh(geo, mats.deckSide);
+  plate.castShadow = true; plate.receiveShadow = true;
+  g.add(plate);
+
+  // diagonal struts from the hull side up to the gallery edge
+  for (const side of [1, -1]) {
+    for (let x = -150; x <= 150; x += 15) {
+      const t = (x + HALF_L) / SHIP.length;
+      if (t < 0.05 || t > 0.90) continue;
+      const [, keel] = lerpStations(t);
+      const u = THREE.MathUtils.clamp((11 + keel) / (SHIP.hullTopY + keel), 0, 1);
+      const { halfW } = hullSection(t, u);
+      const z0 = side * (halfW + 0.6), y0 = 11;
+      const z1 = side * (deckHalfWidth(x, side) * 0.87), y1 = SHIP.deckY - 2.7;
+      const dz = z1 - z0, dy = y1 - y0;
+      const L = Math.hypot(dz, dy);
+      const m = new THREE.Mesh(new THREE.BoxGeometry(1.0, L, 0.9), mats.greyDark);
+      m.position.set(x, (y0 + y1) / 2, (z0 + z1) / 2);
+      m.rotation.x = -Math.atan2(dz, dy);
+      m.castShadow = true; m.receiveShadow = true;
+      g.add(m);
+    }
+  }
+
+  // sponson pods along the gallery edge — weapon mounts, boat davit bases
+  for (const side of [1, -1]) {
+    for (const x of [-128, -84, -36, 16, 66, 112]) {
+      const z = side * (deckHalfWidth(x, side) * 0.87 - 1.5);
+      const m = new THREE.Mesh(new THREE.BoxGeometry(8, 1.6, 3.6), mats.grey);
+      m.position.set(x, SHIP.deckY - 1.9, z);
+      m.castShadow = true;
+      g.add(m);
+    }
+  }
+  return g;
+}
+
 function buildDeck(mats) {
   const group = new THREE.Group();
   const shape = deckShape();
@@ -695,12 +783,40 @@ function buildDeck(mats) {
   slab.castShadow = true; slab.receiveShadow = true;
   group.add(slab);
 
-  // gallery deck / deck support under the overhang
-  const supGeo = new THREE.BoxGeometry(300, 3.4, 58);
-  const sup = new THREE.Mesh(supGeo, mats.deckSide);
-  sup.position.set(-8, SHIP.deckY - 3.6, 0);
-  sup.castShadow = true; sup.receiveShadow = true;
-  group.add(sup);
+  // gallery deck + struts under the overhang (replaces the old single
+  // support box, which read as a rectangular barge under the deck)
+  group.add(buildGallery(mats));
+
+  // jet blast deflectors, raised, behind catapults 1 & 2
+  for (const zOff of [-7.5, 7.5]) {
+    const jbd = new THREE.Mesh(new THREE.BoxGeometry(9, 0.5, 10), mats.greyDark);
+    jbd.position.set(88, SHIP.deckY + 3.1, zOff);
+    jbd.rotation.set(-Math.PI / 3.1, 0, 0);
+    jbd.castShadow = true;
+    group.add(jbd);
+  }
+
+  // deck-edge safety nets: a grid texture on hanging strips, following the
+  // real outline (the old fixed stanchion row floated off the deck edge)
+  const netTex = makeNetTexture();
+  for (const side of [1, -1]) {
+    const pts = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 4) continue;
+      const m = new THREE.Mesh(
+        new THREE.PlaneGeometry(len, 1.6),
+        new THREE.MeshStandardMaterial({
+          map: netTex, transparent: true, side: THREE.DoubleSide,
+          color: 0x39424b, roughness: 0.9, metalness: 0.1, depthWrite: false,
+        }));
+      m.position.set((x1 + x2) / 2, SHIP.deckY - 0.95, (z1 + z2) / 2 - side * 0.9);
+      m.rotation.y = -Math.atan2(z2 - z1, x2 - x1);
+      m.rotation.x = -Math.PI / 2;
+      group.add(m);
+    }
+  }
 
   // deck edge catwalk
   const catwalk = new THREE.Group();
@@ -724,11 +840,18 @@ function buildDeck(mats) {
 }
 
 /* ------------------------------------------------------------------ *
- * Island (superstructure)
+ * Island (superstructure) — Ford-class style
+ *
+ * Footprint x 31..65, z 26..36 (compact, ~2/3 aft of the bow like the
+ * real thing). Stepped tower, flat phased-array panels, an OPEN nav-bridge
+ * house (floor / roof / side+rear walls, window band + mullions at the
+ * front) so the bridge camera actually sees over the bow, bridge wings,
+ * one box mast with two yardarms, and the rotating EASR panel on top.
  * ------------------------------------------------------------------ */
 function buildIsland(mats) {
   const g = new THREE.Group();
   const Y0 = SHIP.deckY;
+  const CX = 48, CZ = 31;
   const add = (geo, mat, x, y, z, ry = 0) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
@@ -738,59 +861,74 @@ function buildIsland(mats) {
     return m;
   };
 
-  // main block
-  add(new THREE.BoxGeometry(55, 21, 14), mats.island, 57.5, Y0 + 10.5, 31);
-  // chamfered forward face
-  add(new THREE.BoxGeometry(10, 21, 14), mats.island, 30.5, Y0 + 10.5, 31, 0.0);
-  // bridge level
-  add(new THREE.BoxGeometry(40, 4.2, 12), mats.island, 55, Y0 + 23.1, 31);
-  // bridge windows
-  const winGeo = new THREE.BoxGeometry(38, 1.6, 12.4);
-  add(winGeo, mats.glass, 55, Y0 + 23.4, 31);
-  // PriFly (primary flight control) — cantilevered box
-  add(new THREE.BoxGeometry(20, 4.6, 13), mats.island, 62, Y0 + 27.5, 32);
-  add(new THREE.BoxGeometry(18, 1.5, 13.4), mats.glass, 62, Y0 + 28.2, 32);
-  // funnel / exhaust stacks
-  add(new THREE.BoxGeometry(9, 7, 9), mats.greyDark, 40, Y0 + 28.5, 31);
-  add(new THREE.BoxGeometry(9, 7, 9), mats.greyDark, 72, Y0 + 28.5, 31);
-  // deckhouse detail
-  add(new THREE.BoxGeometry(12, 3, 6), mats.grey, 34, Y0 + 26, 27);
-  add(new THREE.BoxGeometry(12, 3, 6), mats.grey, 76, Y0 + 26, 27);
-
-  // planar radar arrays on the island sides
-  for (const [x, y] of [[46, Y0 + 13], [68, Y0 + 13]]) {
-    add(new THREE.BoxGeometry(11, 11, 1.4), mats.greyDark, x, y, 38.3);
-    add(new THREE.BoxGeometry(11, 11, 1.4), mats.greyDark, x, y, 23.7);
+  // base gallery + life-raft canister rows
+  add(new THREE.BoxGeometry(36, 1.6, 12), mats.greyDark, CX, Y0 + 0.8, CZ);
+  const raftGeo = new THREE.CylinderGeometry(0.42, 0.42, 1.9, 10);
+  for (let x = 33.5; x <= 62.5; x += 3.6) {
+    for (const dz of [-5.5, 5.5]) {
+      add(raftGeo, mats.white, x, Y0 + 1.95, CZ + dz, 0, Math.PI / 2);
+    }
   }
 
-  // masts
-  const mast = (x, h) => {
-    add(new THREE.CylinderGeometry(0.5, 0.8, h, 8), mats.grey, x, Y0 + 30 + h / 2, 31);
-    for (let i = 0; i < 4; i++) {
-      add(new THREE.BoxGeometry(6 - i, 0.3, 0.3), mats.greyDark,
-          x, Y0 + 32 + i * 2.2, 31);
-    }
-    add(new THREE.SphereGeometry(1.6, 12, 10), mats.white, x, Y0 + 30 + h + 1.5, 31);
-  };
-  mast(48, 15);
-  mast(66, 11);
+  // main tower (stepped, slab-sided)
+  add(new THREE.BoxGeometry(30, 11, 9), mats.island, CX, Y0 + 7.1, CZ);
+  // flat phased-array sensor panels on both faces, slightly canted
+  for (const [px, py] of [[42, Y0 + 7], [54, Y0 + 7]]) {
+    add(new THREE.BoxGeometry(7, 7, 0.4), mats.greyDark, px, py, CZ + 4.55, 0.05);
+    add(new THREE.BoxGeometry(7, 7, 0.4), mats.greyDark, px, py, CZ - 4.55, -0.05);
+  }
 
-  // rotating air-search radar
+  // flag bridge with window band
+  add(new THREE.BoxGeometry(26, 3.6, 8.4), mats.island, CX, Y0 + 14.4, CZ);
+  add(new THREE.BoxGeometry(24, 1.4, 8.8), mats.glass, CX, Y0 + 14.9, CZ);
+
+  // ---- nav bridge house: OPEN front, so the bridge view sees the bow ----
+  add(new THREE.BoxGeometry(22, 0.5, 10), mats.island, CX, Y0 + 16.45, CZ);   // floor
+  add(new THREE.BoxGeometry(23, 0.6, 10.6), mats.island, CX, Y0 + 20.7, CZ);  // roof
+  add(new THREE.BoxGeometry(21.4, 3.4, 0.5), mats.island, CX, Y0 + 18.3, CZ + 4.85); // walls
+  add(new THREE.BoxGeometry(21.4, 3.4, 0.5), mats.island, CX, Y0 + 18.3, CZ - 4.85);
+  add(new THREE.BoxGeometry(0.5, 3.4, 10), mats.island, CX - 10.9, Y0 + 18.3, CZ);   // rear
+  add(new THREE.BoxGeometry(0.5, 1.2, 22), mats.island, CX + 10.9, Y0 + 17.3, CZ);   // sill
+  add(new THREE.BoxGeometry(0.5, 1.2, 22), mats.island, CX + 10.9, Y0 + 19.8, CZ);   // header
+  add(new THREE.BoxGeometry(0.14, 2.0, 21.4), mats.glass, CX + 10.9, Y0 + 18.65, CZ);
+  for (const mz of [CZ - 3, CZ + 3]) {                                          // mullions
+    add(new THREE.BoxGeometry(0.3, 2.0, 0.3), mats.greyDark, CX + 10.9, Y0 + 18.65, mz);
+  }
+
+  // bridge wings: grated platforms out beyond the house walls
+  for (const dz of [-6.6, 6.6]) {
+    add(new THREE.BoxGeometry(9, 0.35, 3.2), mats.grey, CX, Y0 + 16.7, CZ + dz);
+    for (const rx of [-4, 0, 4]) {
+      add(new THREE.CylinderGeometry(0.05, 0.05, 1.05, 5), mats.greyDark,
+        CX + rx, Y0 + 17.4, CZ + dz + (dz > 0 ? 1.4 : -1.4));
+    }
+    add(new THREE.BoxGeometry(9, 0.08, 0.08), mats.greyDark,
+      CX, Y0 + 17.9, CZ + dz + (dz > 0 ? 1.4 : -1.4));
+  }
+
+  // PriFly / air-traffic house above
+  add(new THREE.BoxGeometry(16, 2.8, 8), mats.island, CX + 2, Y0 + 22.4, CZ);
+  add(new THREE.BoxGeometry(14, 1.1, 8.4), mats.glass, CX + 2, Y0 + 22.6, CZ);
+
+  // box mast: column, two yardarms, dome, whips
+  add(new THREE.BoxGeometry(1.8, 10, 1.4), mats.grey, CX, Y0 + 28.6, CZ);
+  add(new THREE.BoxGeometry(7, 0.25, 0.25), mats.greyDark, CX, Y0 + 26.6, CZ);
+  add(new THREE.BoxGeometry(5, 0.25, 0.25), mats.greyDark, CX, Y0 + 29.4, CZ);
+  add(new THREE.SphereGeometry(1.4, 12, 10), mats.white, CX, Y0 + 34.4, CZ);
+  for (const wx of [-0.6, 0.6]) {
+    add(new THREE.CylinderGeometry(0.05, 0.08, 6, 5), mats.greyDark,
+      CX + wx, Y0 + 37, CZ, wx * 0.06);
+  }
+
+  // rotating EASR panel (the only moving part — kept out of the static bake)
   const spin = new THREE.Group();
-  const dish = new THREE.Mesh(new THREE.BoxGeometry(7, 0.4, 1.8), mats.greyDark);
+  add(new THREE.CylinderGeometry(0.4, 0.55, 1.2, 10), mats.greyDark, CX - 4, Y0 + 24.3, CZ);
+  const dish = new THREE.Mesh(new THREE.BoxGeometry(5.5, 3.2, 0.4), mats.greyDark);
   spin.add(dish);
-  spin.position.set(48, Y0 + 46, 31);
+  spin.position.set(CX - 4, Y0 + 26, CZ);
   spin.userData.dynamic = true;   // rotates every frame; keep out of the bake
   g.add(spin);
   g.userData.spin = spin;
-
-  // safety nets / rails around the island top
-  const rail = new THREE.Mesh(new THREE.BoxGeometry(42, 0.15, 0.15), mats.greyDark);
-  rail.position.set(55, Y0 + 25.4, 37.2); g.add(rail);
-  const rail2 = rail.clone(); rail2.position.z = 24.8; g.add(rail2);
-
-  // masthead light + flag staff
-  add(new THREE.CylinderGeometry(0.2, 0.2, 6, 6), mats.white, 88, Y0 + 24, 31);
 
   return g;
 }
@@ -1036,12 +1174,12 @@ function buildDetails(mats) {
     b.rotation.y = ry;
     g.add(b);
   };
-  ciws(150, -30, -0.3);
-  ciws(150, 30, 0.3);
-  ciws(-160, 34, Math.PI);
+  ciws(146, -21, -0.3);
+  ciws(146, 21, 0.3);
+  ciws(-158, 33, Math.PI);
 
   // Sea Sparrow / ESSM launchers
-  for (const [x, z, ry] of [[140, -34, -0.4], [140, 34, 0.4]]) {
+  for (const [x, z, ry] of [[136, -26, -0.4], [136, 26, 0.4]]) {
     const l = new THREE.Mesh(new THREE.BoxGeometry(5, 3, 3.4), mats.greyDark);
     l.position.set(x, SHIP.deckY + 1.6, z);
     l.rotation.set(-0.35, ry, 0);
@@ -1076,30 +1214,26 @@ function buildDetails(mats) {
   add(new THREE.BoxGeometry(9, 0.3, 0.3), mats.grey, -146, SHIP.deckY + 7.9, -30);
 
   // ---- deck-edge antenna farm (the clutter that makes it read as real) --
+  // NB positions respect deckHalfWidth(): an antenna placed past the outline
+  // floats in mid-air beside the ship.
   const whip = (x, z, h, ry = 0) => {
     add(new THREE.CylinderGeometry(0.06, 0.09, h, 5), mats.greyDark,
         x, SHIP.deckY + h / 2, z).rotation.z = ry;
   };
-  for (const [x, z] of [[120, 36], [110, 36], [-80, 37], [-90, 37],
-                        [-30, -40], [60, -38], [140, 32], [-140, 34]]) {
+  for (const [x, z] of [[118, 34], [108, 34], [-80, 37], [-90, 37],
+                        [-30, -37], [60, -30], [138, 28], [-140, 35]]) {
     whip(x, z, 3.2 + Math.random() * 2.6, (Math.random() - 0.5) * 0.25);
   }
   // radome / communication domes
-  for (const [x, z, r] of [[-60, 35, 1.1], [70, -37, 0.9], [-120, 36, 1.3]]) {
+  for (const [x, z, r] of [[-60, 35, 1.1], [70, -30, 0.9], [-120, 36, 1.3]]) {
     const d = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 8), mats.white);
     d.position.set(x, SHIP.deckY + r, z);
     d.castShadow = true;
     g.add(d);
   }
-  // deck-edge safety nets (stanchions + rope)
-  for (let i = 0; i < 26; i++) {
-    const x = -160 + i * 12.6;
-    add(new THREE.CylinderGeometry(0.07, 0.07, 1.1, 5), mats.greyDark,
-        x, SHIP.deckY + 0.55, 38.6);
-  }
 
   // ---- vents / ducting along the deck edge ---------------------------
-  for (const [x, z, w] of [[-10, -41, 14], [30, -40, 12], [90, -36, 10]]) {
+  for (const [x, z, w] of [[-10, -36, 14], [30, -35, 12], [90, -28, 10]]) {
     add(new THREE.BoxGeometry(w, 1.0, 1.6), mats.greyDark, x, SHIP.deckY + 0.5, z);
   }
 
@@ -1373,7 +1507,8 @@ export function createCarrier({ quality = 'high' } = {}) {
   const hull = buildHull(mats.hull, mats.hullPort, hullStations, ring);
   group.add(hull);
   group.add(buildTransom(mats.hull));
-  group.add(buildBulb(mats.hull));
+  // NB: no bulbous bow — the Ford class does not carry one, and a sphere
+  // glued to the stem reads as a cargo-ship part on a carrier.
   group.add(buildDeck(mats));
   const island = buildIsland(mats);
   group.add(island);
@@ -1382,7 +1517,7 @@ export function createCarrier({ quality = 'high' } = {}) {
 
   // ---- air wing -------------------------------------------------
   const spots = [
-    [96, 24, 0.06], [96, 33, 0.06], [74, 24, -0.05], [74, 33, -0.05],
+    [96, 24, 0.06], [96, 33, 0.06], [80, 20, -0.05], [80, 33, -0.05],
     [-50, 32, 0.02], [-72, 32, 0.0], [-94, 32, -0.02],
     [-52, 15, 0.03], [-74, 15, 0.0],
     [42, -33, 3.0], [20, -31, 3.0],
@@ -1401,24 +1536,9 @@ export function createCarrier({ quality = 'high' } = {}) {
     group.add(h);
   }
 
-  // ---- crew (scale reference) ------------------------------------
-  const crewGeo = new THREE.CapsuleGeometry(0.22, 0.9, 4, 6);
-  const crewMats = [
-    new THREE.MeshStandardMaterial({ color: 0xe2661a, roughness: 0.8 }),
-    new THREE.MeshStandardMaterial({ color: 0xd9c400, roughness: 0.8 }),
-    new THREE.MeshStandardMaterial({ color: 0x2b6fb5, roughness: 0.8 }),
-    new THREE.MeshStandardMaterial({ color: 0xd8d8d8, roughness: 0.8 }),
-  ];
-  for (let i = 0; i < 60; i++) {
-    const c = new THREE.Mesh(crewGeo, crewMats[i % 4]);
-    c.position.set(
-      THREE.MathUtils.randFloat(-150, 150),
-      SHIP.deckY + 0.75,
-      THREE.MathUtils.randFloat(-38, 37),
-    );
-    c.castShadow = true;
-    group.add(c);
-  }
+  // (the deck crew is a separate animated system — see src/crew.js. The old
+  // static capsule people are gone: frozen mannequins scattered randomly on
+  // the deck read as debris, not sailors.)
 
   // one draw call per material for everything static (see bakeStatic)
   bakeStatic(group);

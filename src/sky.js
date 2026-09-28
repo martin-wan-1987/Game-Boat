@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 
 export class SkySystem {
-  constructor(renderer, scene) {
+  constructor(renderer, scene, shadowSize = 2048) {
     this.renderer = renderer;
     this.scene = scene;
 
@@ -32,7 +32,9 @@ export class SkySystem {
     this.sunLight = new THREE.DirectionalLight(0xfff2dd, 2.9);
     this.sunLight.castShadow = true;
     const s = this.sunLight.shadow;
-    s.mapSize.set(2048, 2048);
+    // wired to the quality preset (the QUALITY.shadow tiers were previously
+    // never applied — the map was hard-coded at 2048 on every tier)
+    s.mapSize.set(shadowSize, shadowSize);
     s.camera.near = 1;
     s.camera.far = 1600;
     const d = 420;
@@ -43,10 +45,12 @@ export class SkySystem {
     scene.add(this.sunLight);
     scene.add(this.sunLight.target);
 
-    // ambient / bounce light from sky + sea. Kept low on purpose: the Preetham
-    // sky outputs radiance well above 1.0, so a "normal looking" 1.0 here
-    // washes every material out.
-    this.hemi = new THREE.HemisphereLight(0xbfd8f0, 0x16242e, 0.28);
+    // ambient / bounce light from sky + sea. The GROUND colour is the sea
+    // itself here — tinting it sea-green is what puts the characteristic
+    // water bounce on the hull's underside and gallery structure, instead of
+    // a generic dark void fill. Kept low: the Preetham sky outputs radiance
+    // well above 1.0, so a "normal looking" fill washes materials out.
+    this.hemi = new THREE.HemisphereLight(0xbfd8f0, 0x1d4a52, 0.32);
     scene.add(this.hemi);
 
     // --- fog --------------------------------------------------------
@@ -153,7 +157,7 @@ export class SkySystem {
     const k = THREE.MathUtils.clamp(t, 0, 1);
     this._storm = k;
     this.sunLight.intensity = 2.9 - k * 1.7;
-    this.hemi.intensity = 0.28 + k * 0.10;
+    this.hemi.intensity = 0.32 + k * 0.10;
     // hazier atmosphere
     this.sky.material.uniforms.turbidity.value = 6.5 + k * 7.0;
     this.sky.material.uniforms.rayleigh.value = 2.2 + k * 0.6;

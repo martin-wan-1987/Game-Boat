@@ -24,6 +24,25 @@ const TAU = Math.PI * 2;
 
 function rand(min, max) { return min + Math.random() * (max - min); }
 
+/* Visual-only chop: four short, steep ripples baked into the GLSL as
+ * constants. Decimetre-scale detail like this cannot move a 100 000 t hull,
+ * so the CPU physics solver deliberately ignores it — but it roughens the
+ * rendered shape and the specular. Every shader that samples the surface
+ * gets the same terms, so foam ribbons still sit exactly on the water. */
+const CHOP_WAVES = Array.from({ length: 4 }, (_, i) => {
+  const ang = (i / 4) * Math.PI + rand(-0.5, 0.5);
+  const len = rand(9, 24);
+  const k = TAU / len;
+  return {
+    dx: Math.cos(ang), dz: Math.sin(ang),
+    k, w: Math.sqrt(G * k), a: rand(0.10, 0.26) * (1 - i * 0.12),
+    q: rand(0.55, 0.85), ph: rand(0, TAU),
+  };
+});
+const CHOP_GLSL = CHOP_WAVES.map((c) =>
+  `chopWave(p, ${c.dx.toFixed(4)}, ${c.dz.toFixed(4)}, ${c.k.toFixed(5)}, ` +
+  `${c.w.toFixed(5)}, ${c.a.toFixed(4)}, ${c.q.toFixed(3)}, ${c.ph.toFixed(4)});`).join('\n  ');
+
 /** Deep-water dispersion: omega from k. */
 export function omegaOfK(k) { return Math.sqrt(G * k); }
 
@@ -435,6 +454,23 @@ WaveSample sampleWaves(vec2 p) {
   vec3 vel = vec3(0.0);
   float txx = 1.0, txz = 0.0, txy = 0.0;
   float tzx = 0.0, tzz = 1.0, tzy = 0.0;
+
+  // accumulates one short visual-only ripple (see CHOP_WAVES above)
+  #define chopWave(pp, dxx, dzz, kk, ww, aa, qq, phh) { \\
+    float f = kk * dot(vec2(dxx, dzz), pp) - ww * uTime + phh; \\
+    float S = sin(f), C = cos(f); \\
+    float QA = qq * aa; \\
+    pos.x += QA * dxx * C; \\
+    pos.z += QA * dzz * C; \\
+    pos.y += aa * S; \\
+    txx += -QA * kk * dxx * dxx * S; \\
+    txz += -QA * kk * dxx * dzz * S; \\
+    txy +=  aa * kk * dxx * C; \\
+    tzx += -QA * kk * dxx * dzz * S; \\
+    tzz += -QA * kk * dzz * dzz * S; \\
+    tzy +=  aa * kk * dzz * C; \\
+  }
+  ${CHOP_GLSL}
 
   for (int i = 0; i < MAX_SEA; i++) {
     if (i >= uSeaCount) break;

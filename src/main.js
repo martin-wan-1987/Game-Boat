@@ -20,6 +20,7 @@ import { TsunamiManager, TSUNAMI_TIERS } from './tsunami.js';
 import { DamageModel } from './damage.js';
 import { HullFoam, WakeRibbon, Particles, SprayEmitter, Rain, PropWash } from './fx.js';
 import { CockpitOverlay } from './cockpit.js';
+import { DeckCrew } from './crew.js';
 import { Audio } from './audio.js';
 
 /* ------------------------------------------------------------------ *
@@ -153,7 +154,7 @@ class Game {
   }
 
   buildScene() {
-    this.skySys = new SkySystem(this.renderer, this.scene);
+    this.skySys = new SkySystem(this.renderer, this.scene, this.q.shadow);
     this.rig = new CameraRig(this.camera);
   }
 
@@ -173,6 +174,10 @@ class Game {
 
   buildShip() {
     this.shipMesh = createCarrier({ quality: this.q.shipDetail });
+    // the deck crew rides the hull: parented to the ship so it heels with
+    // the deck (six instanced draws for 48 articulated sailors)
+    this.crew = new DeckCrew(this.q.shipDetail === 'low' ? 28 : 48);
+    this.shipMesh.add(this.crew.group);
     this.scene.add(this.shipMesh);
     this.shipSpin = this.shipMesh.userData.spin;
   }
@@ -290,6 +295,11 @@ class Game {
     this.rig.radius = 620;
     this.rig.theta = -0.6;
     this.rig.phi = 1.12;
+    // The rig has been sitting at the world origin (inside the hull) since
+    // boot — while the lobby covered the screen that was invisible. Without
+    // this snap the first seconds of play lerp the lens out THROUGH the hull,
+    // whose unlit DoubleSide interior flashes black across the view.
+    this.rig._snap = true;
     this.storm = 0;
     this.skySys?.setStorm(0);
     this.cockpit?.show(false);
@@ -297,7 +307,9 @@ class Game {
 
   fireTsunami(tierId) {
     if (!this.running) return;
-    if (this.tsunami.active) return;
+    // Free mode: fire as often as you like. A new event REPLACES the wave
+    // train that is still running — the field is reset by spawnTsunami, so
+    // there is no state to clean up here.
     const tier = TSUNAMI_TIERS[tierId];
     if (!tier) return;
     this.tsunami.trigger(tierId, {
@@ -428,6 +440,14 @@ class Game {
     this.shipMesh.quaternion.copy(this.phys.quaternion);
     if (this.shipSpin) this.shipSpin.rotation.y += dt * 0.6;
 
+    // deck crew walk their rounds; past ~16 deg of heel they have long since
+    // gone below / strapped in, and frozen mannequins on a dying deck read wrong
+    {
+      const rollDeg = Math.abs(this.phys.attitude.roll) * 57.2958;
+      this.crew.group.visible = rollDeg < 16;
+      if (this.crew.group.visible) this.crew.update(dt);
+    }
+
     // ---- tsunami + damage ----------------------------------------
     const before = this.tsunami.state;
     this.tsunami.update(dt, this.time, this.phys, this.phys);
@@ -472,7 +492,7 @@ class Game {
       ? THREE.MathUtils.clamp(this.field.tsuHeight / 10, 0.35, 1) : 0;
     this.hullFoam.update(this.time, this.field, this.shipMesh, speed, this.phys.slam);
     this.wake.update(this.time, dt, this.field, this.shipMesh, speed);
-    this.propWash.update(this.time, this.field, this.shipMesh, this.phys.throttle);
+    this.propWash.update(this.time, dt, this.field, this.shipMesh, this.phys.throttle);
     this.spray.update(dt, this.shipMesh, speed, this.phys.slam, this.field,
       seaState, this.phys.velocity.y);
     this.particles.update(dt, 0.6);
@@ -527,7 +547,8 @@ class Game {
 
   render() {
     this.ocean.setCamDist(this.camera.position.distanceTo(this.phys.position));
-    this.ocean.update(this.time, this.camera.position, this.field);
+    // grid follows the SHIP so the finest cells always sit at the waterline
+    this.ocean.update(this.time, this.phys.position, this.field);
     this.composer ? this.composer.render() : this.renderer.render(this.scene, this.camera);
   }
 

@@ -245,7 +245,10 @@ export class Ocean {
             // NB: a third, very large ripple tile was removed here — at
             // orbit-camera range its ~80 m repeat was clearly visible as
             // concentric banding.
-            vec3 rip = n1 + n2 * 0.6;
+            // the second octave's footprint is rotated 45 deg so the two
+            // tiles cannot line up into a visible repeat grid
+            vec2 rot2 = mat2(0.7071, -0.7071, 0.7071, 0.7071) * vec2(n2.x, n2.z);
+            vec3 rip = n1 + vec3(rot2.x, 0.0, rot2.y) * 0.6;
             N = normalize(gN + (T * rip.x + B * rip.z) * 0.50 * uRippleAmt * fade);
           }
 
@@ -269,12 +272,15 @@ export class Ocean {
           // ---- sun glitter ---------------------------------------------
           // Three octaves: a hard specular glint, the broader sparkle field,
           // and a wide sheen. A single Blinn lobe looks like plastic; the
-          // layered version is what makes sunlit water read as water.
+          // layered version is what makes sunlit water read as water. The
+          // whole stack is damped with distance, where sub-pixel normals
+          // otherwise alias into shimmer.
           vec3 H = normalize(uSunDir + V);
           float nh = max(dot(N, H), 0.0);
-          float spec = pow(nh, 900.0) * 13.0
+          float specFade = 0.30 + 0.70 * fade;
+          float spec = (pow(nh, 900.0) * 13.0
                      + pow(nh, 130.0) * 1.4
-                     + pow(nh, 26.0)  * 0.20;
+                     + pow(nh, 26.0)  * 0.20) * specFade;
           col += uSunColor * spec;
 
           // ---- subsurface scattering through thin crests ----------------
@@ -330,15 +336,20 @@ export class Ocean {
     this.uniforms.uFogDensity.value = density;
   }
 
-  update(time, camPos, waveField) {
+  update(time, shipPos, waveField) {
     applyWaveUniforms(this.uniforms, waveField);
     this.uniforms.uTime.value = time;
     this.uniforms.uCamDist.value = this._camDist || 0;
-    // snap so the finest cells stay put in world space -> no vertex swimming
+    // The graded grid is centred on the SHIP, not the camera: the finest
+    // cells (~1.2-1.6 m) then always sit exactly where the hull meets the
+    // water, so steep waves never slice through the ship side between
+    // coarse vertices — the "water clipping into the hull" artefact. With a
+    // camera-centred grid, orbiting put the ship 600 m out in 5-10 m cells.
+    // Snapping to whole cells keeps the vertices static in world space.
     const c = this.finestCell * 4;
     this.uniforms.uOffset.value.set(
-      Math.round(camPos.x / c) * c,
-      Math.round(camPos.z / c) * c,
+      Math.round(shipPos.x / c) * c,
+      Math.round(shipPos.z / c) * c,
     );
     this.uniforms.uTsunamiFoam.value = THREE.MathUtils.clamp(
       waveField.tsuActive ? 0.85 : 0.0, 0, 1);

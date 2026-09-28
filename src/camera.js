@@ -142,12 +142,15 @@ export class CameraRig {
         break;
       }
       case 'bridge': {
-        // Sitting at the bridge windows, not buried in the island block. The
-        // island spans y 20..45 locally, so y=27 put the camera *inside* it and
-        // the view was all superstructure. The window band is at y~43.6.
-        const local = new THREE.Vector3(70, 43.4, 31);
+        // In the nav-bridge house: eye 2.2 m above the deck of a bridge
+        // whose FRONT IS OPEN (sill + window band + mullions — see
+        // buildIsland). 3.5 m behind the glass, looking down the flight
+        // deck toward the bow, which sits ~10° below the view axis and so
+        // lands low in frame — you watch the deck rush and the stem part
+        // the sea, exactly the reference view.
+        const local = new THREE.Vector3(55.4, 38.9, 31);
         const p = local.clone().applyQuaternion(q).add(shipPos);
-        const look = new THREE.Vector3(900, 30, 31).applyQuaternion(q).add(shipPos);
+        const look = new THREE.Vector3(600, 24, 24).applyQuaternion(q).add(shipPos);
         if (snap) cam.position.copy(p);
         else cam.position.lerp(p, 1 - Math.exp(-dt * 30));
         cam.lookAt(look);
@@ -187,23 +190,41 @@ export class CameraRig {
     //     first-person rigs, gentle in orbit
     //   • a fine, high-frequency vibration through the hull (4 shafts)
     //   • the chase rig drops back a little so she visibly pulls away
+    // In bridge/deck the vibration is ROTATIONAL, not translational: with
+    // window mullions and sills a couple of metres from the lens, moving the
+    // camera amplifies parallax and the frames strobe against the scene.
+    // A tiny rotation reads as the hull trembling with everything moving
+    // together — which is what actually happens when you stand there.
     const sp = THREE.MathUtils.clamp(speed / 16, 0, 1);
     const firstPerson = this.mode === 'bridge' || this.mode === 'deck'
                      || this.mode === 'chase';
     if (firstPerson && sp > 0.02) {
       const amp = sp * sp * 0.16;
       const tt = this._t;
-      cam.position.y += Math.sin(tt * 41.0) * amp + Math.sin(tt * 67.0) * amp * 0.5;
-      cam.position.x += Math.sin(tt * 53.0) * amp * 0.6;
-      cam.position.z += Math.cos(tt * 47.0) * amp * 0.6;
+      if (this.mode === 'chase') {
+        cam.position.y += Math.sin(tt * 41.0) * amp + Math.sin(tt * 67.0) * amp * 0.5;
+        cam.position.x += Math.sin(tt * 53.0) * amp * 0.6;
+        cam.position.z += Math.cos(tt * 47.0) * amp * 0.6;
+      } else {
+        const ra = amp * 0.035;
+        cam.rotateX(Math.sin(tt * 41.0) * ra + Math.sin(tt * 67.0) * ra * 0.5);
+        cam.rotateZ(Math.sin(tt * 53.0) * ra * 0.7);
+        cam.rotateY(Math.cos(tt * 47.0) * ra * 0.7);
+      }
     }
 
-    // impact shake
+    // impact shake — same rule: rotate the close-up rigs, translate the rest
     if (this.shake > 0.001) {
       const s = this.shake * 2.2;
-      cam.position.x += (Math.random() - 0.5) * s;
-      cam.position.y += (Math.random() - 0.5) * s;
-      cam.position.z += (Math.random() - 0.5) * s;
+      if (this.mode === 'bridge' || this.mode === 'deck') {
+        cam.rotateX((Math.random() - 0.5) * s * 0.012);
+        cam.rotateZ((Math.random() - 0.5) * s * 0.012);
+        cam.rotateY((Math.random() - 0.5) * s * 0.008);
+      } else {
+        cam.position.x += (Math.random() - 0.5) * s;
+        cam.position.y += (Math.random() - 0.5) * s;
+        cam.position.z += (Math.random() - 0.5) * s;
+      }
       this.shake *= Math.exp(-dt * 3.2);
     }
 

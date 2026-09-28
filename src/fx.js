@@ -10,7 +10,7 @@
  */
 import * as THREE from 'three';
 import { glslWaves, applyWaveUniforms } from './waves.js';
-import { waterlineOutline } from './ship.js';
+import { waterlineOutline, deckHalfWidth } from './ship.js';
 
 /* ================================================================== *
  * Hull foam / bow wave
@@ -81,7 +81,7 @@ export class HullFoam {
           // being shouldered aside, and it is what makes the V of the bow wave.
           float bowness = pow(1.0 - abs(aAlong - 0.5) * 2.0, 1.6);
           // the pushed water widens hard with speed, and the bow leads it
-          float width = 1.5 + uSpeed * (5.0 + bowness * 11.0) + uSlam * 10.0;
+          float width = 2.2 + uSpeed * (5.0 + bowness * 11.0) + uSlam * 10.0;
           local.xz += outDir * width * aSide;
 
           vec4 world = modelMatrix * vec4(local, 1.0);
@@ -89,15 +89,17 @@ export class HullFoam {
           WaveSample s = sampleWaves(wp);
           // the crest of the shoulder wave rides a little proud of the surface
           vec3 worldPos = vec3(s.pos.x,
-            s.pos.y + 0.40 + (1.0 - aSide) * 0.30 + bowness * uSpeed * 1.1,
+            s.pos.y + 0.55 + (1.0 - aSide) * 0.30 + bowness * uSpeed * 1.1,
             s.pos.z);
 
           vWorld = worldPos;
           vAlong = aAlong;
-          // densest right at the hull, thinning outward
+          // densest right at the hull, thinning outward. The base floor is
+          // what draws the waterline: a continuous white collar that masks
+          // the mesh-resolution seam where the ocean plane meets the hull.
           float edge = 1.0 - aSide * 0.80;
           vAlpha = edge * clamp(
-            0.08 + uSpeed * (0.55 + bowness * 0.75) + uSlam * 1.6, 0.0, 1.7);
+            0.14 + uSpeed * (0.55 + bowness * 0.75) + uSlam * 1.6, 0.0, 1.7);
           gl_Position = projectionMatrix * viewMatrix * vec4(worldPos, 1.0);
         }
       `,
@@ -456,20 +458,25 @@ export class SprayEmitter {
       const along = Math.random() < 0.72
         ? 150 + Math.random() * 18          // bow
         : -20 + Math.random() * 150;        // along the hull
+      // Born OUTBOARD of the flight-deck outline: spray that starts under
+      // the 78 m deck overhang rises through it and reads as water clipping
+      // through the ship. Out past the outline it can fly as high as it likes.
+      const dw = deckHalfWidth(along, side);
       const local = new THREE.Vector3(
         along,
-        -1.2 + Math.random() * 3.5,
-        side * (2 + Math.random() * 15),
+        -1.5 + Math.random() * 2.0,
+        side * (dw + 0.8 + Math.random() * 6),
       );
       local.applyQuaternion(q).add(shipObj.position);
 
       // vertical launch: the harder she is working / the harder she lands,
       // the higher the plume. A tsunami pass throws water mast-high.
       const up = 2.5 + Math.random() * 6
+               + speed * 0.42
                + slam * 26
                + seaState * (8 + Math.random() * 16)
                + drop * 1.4;
-      const out = 2.5 + Math.random() * 7 + speed * 0.4 + seaState * 7;
+      const out = 3.5 + Math.random() * 8 + speed * 0.5 + seaState * 7;
       this.p.spawn(
         local.x, local.y, local.z,
         fwd.x * speed * 0.6 + stbd.x * out * side + (Math.random() - 0.5) * 3.5,
@@ -484,24 +491,28 @@ export class SprayEmitter {
     // ---- impact plume ------------------------------------------------
     // When she is dropped back into the water (large negative vertical
     // velocity) throw one dense ring of water outward, the way a real hull
-    // landing off a wave detonates the surface.
+    // landing off a wave detonates the surface — always outside the deck
+    // silhouette, never through it.
     if (drop > 2.5 || slam > 0.45) {
       this.impactAcc += (drop * 5 + slam * 30) * dt;
       const m = Math.min(90, Math.floor(this.impactAcc));
       this.impactAcc -= m;
       for (let i = 0; i < m; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const r = 10 + Math.random() * 60;
+        const side = Math.random() < 0.5 ? 1 : -1;
+        const along = -150 + Math.random() * 310;
+        const dw = deckHalfWidth(along, side);
         const local = new THREE.Vector3(
-          -150 + Math.random() * 300,
-          -1 + Math.random() * 4,
-          Math.sin(a) * r,
+          along,
+          -1.5 + Math.random() * 2,
+          side * (dw + 1 + Math.random() * 52),
         );
         local.applyQuaternion(q).add(shipObj.position);
         const out = 8 + Math.random() * 20;
         this.p.spawn(
           local.x, local.y, local.z,
-          Math.cos(a) * out, 6 + Math.random() * 18 + drop * 1.2, Math.sin(a) * out,
+          stbd.x * out * side + fwd.x * speed * 0.3 + (Math.random() - 0.5) * 4,
+          6 + Math.random() * 18 + drop * 1.2,
+          stbd.z * out * side + (Math.random() - 0.5) * 4,
           2.0 + Math.random() * 2.6,
           6 + Math.random() * 14,
           0,
@@ -609,6 +620,9 @@ export class PropWash {
       uColor: { value: new THREE.Color(0xf4f9fc) },
       uTime: { value: 0 },
     });
+    // spool state: screws take seconds to spin up and the churn takes seconds
+    // more to reach the surface — the plume must GROW, not pop in
+    this.level = 0;
     this.geo = geo;
     this.mesh = new THREE.Mesh(geo, new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -623,12 +637,15 @@ export class PropWash {
           vec4 world = modelMatrix * vec4(position, 1.0);
           vec2 wp = world.xz;
           WaveSample s = sampleWaves(wp);
-          vec3 worldPos = vec3(s.pos.x, s.pos.y + 0.30, s.pos.z);
           // t = 0 at the transom, 1 at the far end of the churn
           float t = clamp((-168.0 - position.x) / ${ALONG}.0, 0.0, 1.0);
           vT = t;
-          // widest and brightest right behind the screws, dissipating aft
           float across = 1.0 - abs(position.z) / ${ACROSS * 0.5}.0;
+          // the screws physically bulge the water right behind the ship
+          float mound = uThrottle * uThrottle * (1.0 - t) * (0.55 + across * 0.45);
+          vec3 worldPos = vec3(s.pos.x, s.pos.y + 0.30 + mound, s.pos.z);
+          // widest and brightest right behind the screws, dissipating aft —
+          // and the churn FIELD only reaches as far as the screws have spun up
           vA = (1.0 - t) * clamp(across * 1.4, 0.0, 1.0)
              * clamp(uThrottle * 1.15, 0.0, 1.0);
           vWorld = worldPos;
@@ -650,6 +667,7 @@ export class PropWash {
           float f2 = texture2D(uFoamTex, vWorld.xz * 0.28 - vec2(uTime * 0.22, uTime * 0.15)).a;
           float f3 = texture2D(uFoamTex, vWorld.xz * 0.62 + vec2(-uTime * 0.4, uTime * 0.3)).a;
           float churn = clamp(f1 * 0.5 + f2 * 0.7 + f3 * 0.45, 0.0, 1.3);
+          // churn only reaches as far down the trail as the wash has grown
           float a = vA * (0.35 + 0.75 * churn);
           if (a < 0.004) discard;
           // a touch brighter right at the screws
@@ -662,11 +680,22 @@ export class PropWash {
     this.mesh.renderOrder = 2;
   }
 
-  update(time, field, shipObj, throttle) {
+  update(time, dt, field, shipObj, throttle) {
     applyWaveUniforms(this.uniforms, field);
     this.uniforms.uTime.value = time;
-    // only ahead power makes wash; going astern churns at the bow instead
-    this.uniforms.uThrottle.value = Math.max(0, throttle);
+
+    // Spool-up: τ ≈ 3.2 s opening the throttle, ≈ 4.5 s backing off. On top
+    // of that the intensity never holds still — layered sines give it the
+    // uneven surge real propeller wash has, so it never reads as a decal.
+    const target = Math.max(0, throttle);
+    const tau = target > this.level ? 3.2 : 4.5;
+    this.level += (target - this.level) * (1 - Math.exp(-dt / tau));
+    const wob = 0.86
+      + 0.09 * Math.sin(time * 0.9)
+      + 0.05 * Math.sin(time * 2.3 + 1.7)
+      + 0.04 * Math.sin(time * 5.1 + 0.6);
+    this.uniforms.uThrottle.value = Math.max(0, this.level * wob);
+
     this.mesh.position.copy(shipObj.position);
     this.mesh.quaternion.copy(shipObj.quaternion);
     this.mesh.updateMatrixWorld(true);
