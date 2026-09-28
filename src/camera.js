@@ -167,12 +167,25 @@ export class CameraRig {
       }
       case 'cinema': {
         const d = tsunamiDir || fwd;
-        const dist = 480;
+        // Park SEAWARD of the leading crest, retreating as the wave closes,
+        // so the wall never runs over the lens. The old rig sat between the
+        // ship and the wave: the near-breaking crest (15 m+, curling lip
+        // overhanging the surface) passed THROUGH the camera on its way in,
+        // and for the second or two that the lip was over the lens the
+        // screen was the inside of an opaque wave — a full black flash.
+        // Switching into this view mid-event could also spawn the camera
+        // inside the wave group; the crest-distance clamp fixes that too.
+        let dist = 480;
+        const dCrest = field.distanceToCrest(shipPos.x, shipPos.z);
+        if (isFinite(dCrest) && dCrest > 0 && dCrest < 640) {
+          dist = Math.max(170, Math.min(480, dCrest - 150));
+        }
         const wanted = shipPos.clone()
           .addScaledVector(d, dist)
           .addScaledVector(stbd, 260)
-          .add(new THREE.Vector3(0, 58, 0));
-        const wy = field.heightAt(wanted.x, wanted.z) + 10;
+          .add(new THREE.Vector3(0, 75, 0));
+        // clearance for the curling lip, not just the surface underfoot
+        const wy = field.heightAt(wanted.x, wanted.z) + 22;
         if (wanted.y < wy) wanted.y = wy;
         if (!this._cineInit) { this.chasePos.copy(wanted); this._cineInit = true; }
         const ck = snap ? 1 : (1 - Math.exp(-dt * 3.5));
