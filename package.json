@@ -1,0 +1,16 @@
+{
+  "name": "game-boat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "3D realistic aircraft-carrier / tsunami survival simulator",
+  "scripts": {
+    "dev": "python3 tools/serve.py 8765"
+  },
+  "dependencies": {
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.12.0"
+  }
+}

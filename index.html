@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>钢铁巨舰 · 海啸 | Steel Leviathan</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%2305080c'/><path d='M4 20h24l-3 5H7z' fill='%234fd6ff'/><rect x='14' y='8' width='4' height='11' fill='%234fd6ff'/></svg>" />
+<style>
+  :root{
+    --bg:#05080c;
+    --panel:rgba(10,16,22,.82);
+    --panel-2:rgba(14,22,30,.92);
+    --line:rgba(120,180,215,.22);
+    --line-strong:rgba(120,190,225,.45);
+    --txt:#dce8f0;
+    --txt-dim:#8ea3b3;
+    --cyan:#4fd6ff;
+    --amber:#ffb347;
+    --red:#ff4d4d;
+    --green:#49e08b;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--txt);
+    font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  canvas{display:block;width:100%;height:100%}
+  #app{position:fixed;inset:0}
+  .screen{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    z-index:50;transition:opacity .5s ease,visibility .5s}
+  .screen.hidden{opacity:0;visibility:hidden;pointer-events:none}
+
+  /* ---------------- loading ---------------- */
+  #loading{background:#04070a}
+  #loading .bg{position:absolute;inset:0;background:url('assets/loading-bg.png') center/cover no-repeat;
+    filter:saturate(.85) brightness(.55);transform:scale(1.06)}
+  #loading .vign{position:absolute;inset:0;
+    background:radial-gradient(ellipse at 50% 45%,transparent 25%,rgba(0,0,0,.85) 100%)}
+  #loading .inner{position:relative;z-index:2;width:min(660px,86vw);text-align:center}
+  #loading h1{font-size:clamp(28px,5.2vw,54px);letter-spacing:.30em;font-weight:200;
+    text-indent:.30em;margin-bottom:6px;text-shadow:0 2px 30px rgba(0,0,0,.9)}
+  #loading h2{font-size:clamp(10px,1.5vw,13px);letter-spacing:.55em;text-indent:.55em;
+    color:var(--txt-dim);font-weight:300;margin-bottom:46px}
+  .barwrap{position:relative;height:3px;background:rgba(255,255,255,.10);overflow:hidden}
+  .barwrap i{position:absolute;inset:0 100% 0 0;background:linear-gradient(90deg,#2b8fc4,var(--cyan));
+    transition:right .18s linear;box-shadow:0 0 18px rgba(79,214,255,.75)}
+  .barmeta{display:flex;justify-content:space-between;margin-top:11px;
+    font-family:var(--mono);font-size:11px;color:var(--txt-dim);letter-spacing:.10em}
+  .tip{margin-top:40px;font-size:12px;color:var(--txt-dim);letter-spacing:.08em;min-height:18px;
+    transition:opacity .4s}
+  #enterBtn{margin-top:30px;opacity:0;transition:opacity .5s;pointer-events:none}
+  #enterBtn.on{opacity:1;pointer-events:auto}
+
+  /* ---------------- shared buttons ---------------- */
+  .btn{display:inline-block;padding:13px 34px;border:1px solid var(--line-strong);
+    background:rgba(20,40,55,.45);color:var(--txt);font-size:13px;letter-spacing:.22em;
+    text-indent:.22em;cursor:pointer;transition:.22s;font-family:var(--mono)}
+  .btn:hover{background:rgba(40,110,150,.5);border-color:var(--cyan);color:#fff;
+    box-shadow:0 0 26px rgba(79,214,255,.28)}
+  .btn.ghost{background:transparent;border-color:var(--line);color:var(--txt-dim)}
+
+  /* ---------------- lobby / mode ---------------- */
+  #lobby,#mode,#result{background:#04070a}
+  #lobby .bg,#mode .bg,#result .bg{position:absolute;inset:0;
+    background:url('assets/lobby-bg.png') center/cover no-repeat;
+    filter:saturate(.8) brightness(.38);transform:scale(1.05)}
+  #lobby .vign,#mode .vign,#result .vign{position:absolute;inset:0;
+    background:linear-gradient(180deg,rgba(2,5,8,.75) 0%,rgba(2,5,8,.55) 40%,rgba(2,5,8,.94) 100%)}
+  .wrap{position:relative;z-index:2;width:min(1180px,92vw);max-height:92vh;overflow:auto}
+  .wrap::-webkit-scrollbar{width:6px}
+  .wrap::-webkit-scrollbar-thumb{background:rgba(120,180,215,.3)}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.42em;color:var(--cyan);
+    text-transform:uppercase;margin-bottom:14px}
+  .title{font-size:clamp(24px,3.6vw,40px);font-weight:200;letter-spacing:.12em;margin-bottom:8px}
+  .sub{color:var(--txt-dim);font-size:13px;letter-spacing:.06em;margin-bottom:34px;line-height:1.7}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;margin-bottom:38px}
+  .card{position:relative;border:1px solid var(--line);background:var(--panel);
+    padding:22px 20px;cursor:pointer;transition:.25s;overflow:hidden}
+  .card:hover{border-color:var(--line-strong);background:var(--panel-2);transform:translateY(-2px)}
+  .card.sel{border-color:var(--cyan);background:rgba(16,42,58,.9);
+    box-shadow:0 0 0 1px rgba(79,214,255,.35),0 12px 40px rgba(0,0,0,.6)}
+  .card.locked{cursor:not-allowed;opacity:.42}
+  .card.locked:hover{transform:none;border-color:var(--line)}
+  .card .ico{font-size:26px;margin-bottom:12px;filter:grayscale(.2)}
+  .card h3{font-size:15px;letter-spacing:.10em;font-weight:500;margin-bottom:6px}
+  .card p{font-size:11.5px;color:var(--txt-dim);line-height:1.65;letter-spacing:.03em}
+  .card .tag{position:absolute;top:14px;right:14px;font-family:var(--mono);font-size:9.5px;
+    letter-spacing:.16em;padding:3px 8px;border:1px solid var(--line-strong);color:var(--cyan)}
+  .card.locked .tag{border-color:rgba(150,150,150,.3);color:#888}
+  .card .stat{margin-top:14px;font-family:var(--mono);font-size:10.5px;color:var(--txt-dim);
+    line-height:1.85;border-top:1px solid var(--line);padding-top:12px}
+  .card .stat b{color:var(--txt);font-weight:500}
+  .foot{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
+
+  /* ---------------- game HUD ---------------- */
+  #hud{position:fixed;inset:0;z-index:20;pointer-events:none;
+    font-family:var(--mono);opacity:0;transition:opacity .5s}
+  #hud.on{opacity:1}
+  #hud .ui-block{pointer-events:auto}
+  .hpanel{background:var(--panel);border:1px solid var(--line);backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px)}
+  .hlbl{font-size:9.5px;letter-spacing:.20em;color:var(--txt-dim);text-transform:uppercase}
+
+  /* instruments */
+  #inst{position:absolute;left:20px;top:18px;padding:14px 16px;min-width:212px}
+  #inst .row{display:flex;justify-content:space-between;align-items:baseline;
+    padding:5px 0;border-bottom:1px solid rgba(120,180,215,.10)}
+  #inst .row:last-child{border-bottom:none}
+  #inst .k{font-size:10px;letter-spacing:.14em;color:var(--txt-dim)}
+  #inst .v{font-size:15px;letter-spacing:.04em}
+  #inst .v small{font-size:9.5px;color:var(--txt-dim);margin-left:3px}
+  .warn{color:var(--amber)}
+  .bad{color:var(--red)}
+  .good{color:var(--green)}
+
+  /* attitude indicator */
+  #adi{position:absolute;left:20px;top:214px;width:212px;padding:12px 14px}
+  #adi canvas{width:184px;height:184px;display:block;margin:0 auto}
+
+  /* integrity */
+  #dmg{position:absolute;left:20px;top:448px;width:212px;padding:12px 14px}
+  .meter{height:5px;background:rgba(255,255,255,.09);margin-top:7px;position:relative;overflow:hidden}
+  .meter i{position:absolute;inset:0 100% 0 0;transition:right .3s}
+  .meter.ok i{background:linear-gradient(90deg,#2f9e63,var(--green))}
+  .meter.mid i{background:linear-gradient(90deg,#b8860b,var(--amber))}
+  .meter.low i{background:linear-gradient(90deg,#a02020,var(--red))}
+
+  /* tsunami panel */
+  #tsu{position:absolute;right:20px;top:18px;width:246px;padding:14px 16px}
+  #tsu .opt{display:flex;justify-content:space-between;align-items:center;
+    padding:10px 12px;margin-top:8px;border:1px solid var(--line);cursor:pointer;
+    transition:.18s;background:rgba(255,255,255,.02)}
+  #tsu .opt:hover{background:rgba(79,214,255,.12);border-color:var(--line-strong)}
+  #tsu .opt .nm{font-size:12px;letter-spacing:.08em}
+  #tsu .opt .hh{font-size:10px;color:var(--txt-dim);letter-spacing:.06em}
+  #tsu .opt.s .nm{color:var(--green)}
+  #tsu .opt.m .nm{color:var(--amber)}
+  #tsu .opt.l .nm{color:var(--red)}
+  #tsu .opt.dis{opacity:.4;cursor:not-allowed}
+
+  /* throttle */
+  #thr{position:absolute;right:20px;top:250px;width:246px;padding:14px 16px}
+  .lever{position:relative;height:250px;margin:12px auto 0;width:78px;touch-action:none;cursor:grab}
+  .lever:active{cursor:grabbing}
+  .lever .track{position:absolute;left:50%;top:0;bottom:0;width:10px;margin-left:-5px;
+    background:rgba(255,255,255,.07);border:1px solid var(--line)}
+  .lever .fill{position:absolute;left:50%;bottom:0;width:10px;margin-left:-5px;
+    background:linear-gradient(180deg,var(--cyan),rgba(43,143,196,.35));transition:height .05s linear}
+  .lever .knob{position:absolute;left:50%;width:64px;height:26px;margin-left:-32px;margin-top:-13px;
+    background:linear-gradient(180deg,#2c4a5e,#16262f);border:1px solid var(--line-strong);
+    box-shadow:0 3px 14px rgba(0,0,0,.6);transition:top .05s linear}
+  .lever .knob::after{content:'';position:absolute;left:8px;right:8px;top:11px;height:2px;
+    background:var(--cyan);opacity:.7}
+  .lever .tick{position:absolute;left:50%;width:100%;height:1px;background:rgba(120,180,215,.16)}
+  .lever .tickl{position:absolute;left:calc(50% + 12px);font-size:8.5px;color:var(--txt-dim);
+    transform:translateY(-50%)}
+  #thrPct{text-align:center;font-size:26px;letter-spacing:.05em;margin-top:12px;color:var(--cyan)}
+  #thrPct small{font-size:11px;color:var(--txt-dim);letter-spacing:.14em}
+  #thrOrder{text-align:center;font-size:10.5px;letter-spacing:.24em;color:var(--txt-dim);margin-top:3px}
+
+  /* alert banner */
+  #alert{position:absolute;left:50%;top:76px;transform:translateX(-50%);
+    padding:13px 30px;text-align:center;display:none;min-width:330px}
+  #alert.on{display:block;animation:pulse 1.5s ease-in-out infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,77,77,.0)}
+    50%{box-shadow:0 0 34px 3px rgba(255,77,77,.34)}}
+  #alert .a1{font-size:15px;letter-spacing:.28em;text-indent:.28em}
+  #alert .a2{font-size:10.5px;color:var(--txt-dim);letter-spacing:.10em;margin-top:6px}
+
+  /* camera bar */
+  #cams{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);display:flex;gap:6px;
+    padding:7px 8px}
+  #cams .c{padding:7px 15px;font-size:11px;letter-spacing:.10em;color:var(--txt-dim);
+    cursor:pointer;border:1px solid transparent;transition:.18s}
+  #cams .c:hover{color:var(--txt);background:rgba(79,214,255,.10)}
+  #cams .c.on{color:#04121a;background:var(--cyan);border-color:var(--cyan)}
+
+  /* log */
+  #log{position:absolute;right:20px;bottom:22px;width:340px;max-height:172px;overflow:hidden;
+    padding:11px 14px;display:flex;flex-direction:column-reverse}
+  #log div{font-size:10.5px;line-height:1.75;color:var(--txt-dim);letter-spacing:.04em}
+  #log div:first-child{color:var(--txt)}
+  #log div b{color:var(--amber);font-weight:400}
+
+  /* help */
+  #help{position:absolute;inset:0;background:rgba(3,6,9,.9);display:none;
+    align-items:center;justify-content:center;z-index:30}
+  #help.on{display:flex}
+  #help .box{width:min(760px,90vw);padding:34px 40px;background:var(--panel-2);border:1px solid var(--line)}
+  #help h3{font-size:17px;letter-spacing:.18em;font-weight:400;margin-bottom:22px}
+  #help .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 34px}
+  #help .kk{display:flex;justify-content:space-between;font-size:12px;padding:6px 0;
+    border-bottom:1px solid rgba(120,180,215,.10)}
+  #help .kk span:first-child{color:var(--cyan);font-family:var(--mono);font-size:11px}
+  #help .kk span:last-child{color:var(--txt-dim)}
+  #help .note{margin-top:24px;font-size:11.5px;color:var(--txt-dim);line-height:1.8}
+
+  /* pause */
+  #pause{position:absolute;inset:0;background:rgba(3,6,9,.82);display:none;
+    align-items:center;justify-content:center;z-index:31;flex-direction:column;gap:16px}
+  #pause.on{display:flex}
+  #pause h2{font-size:22px;letter-spacing:.34em;font-weight:200;margin-bottom:16px}
+
+  /* result */
+  #result .wrap{text-align:center}
+  .rbig{font-size:clamp(30px,5vw,54px);font-weight:200;letter-spacing:.16em;margin-bottom:10px}
+  .rgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;
+    background:var(--line);border:1px solid var(--line);margin:32px 0}
+  .rgrid div{background:rgba(8,14,20,.85);padding:20px 14px}
+  .rgrid .k{font-size:10px;letter-spacing:.18em;color:var(--txt-dim);margin-bottom:9px}
+  .rgrid .v{font-size:24px;letter-spacing:.03em}
+  .rgrid .v small{font-size:11px;color:var(--txt-dim);margin-left:3px}
+
+  @media (max-width:900px){
+    #adi,#dmg{display:none}
+    #tsu,#thr{width:190px}
+    #log{display:none}
+    .lever{height:170px}
+  }
+
+  /* ---------------- cockpit glass (first person) ----------------
+     Sits above the WebGL canvas but below the HUD. The canvas inside it is
+     where the rain droplets and the wiper sweep are drawn; the frame/mullion
+     give the shot a real "looking out of the bridge" framing. */
+  #cockpit{position:fixed;inset:0;z-index:10;pointer-events:none;
+    opacity:0;transition:opacity .5s ease}
+  #cockpit.on{opacity:1}
+  #cockpit canvas{position:absolute;inset:0;width:100%;height:100%}
+  #cockpit .glare{position:absolute;inset:0;
+    background:linear-gradient(118deg,rgba(186,218,240,.11) 0%,
+      rgba(186,218,240,0) 24%,rgba(186,218,240,0) 60%,rgba(150,192,224,.08) 100%)}
+  #cockpit .mullion{position:absolute;left:0;right:0;top:47%;height:9px;
+    background:linear-gradient(180deg,rgba(30,40,50,.86),rgba(16,24,32,.88));
+    box-shadow:0 2px 7px rgba(0,0,0,.42),0 -1px 0 rgba(150,180,205,.16)}
+  /* The frame is deliberately gentle. An earlier version used a 20px solid
+     near-black border plus a 150px 82%-opacity vignette, which read as "black
+     shapes flashing" every time the rig switched into or out of the bridge. */
+  #cockpit .frame{position:absolute;inset:0;
+    box-shadow:inset 0 0 90px 20px rgba(5,10,16,.50),
+      inset 0 0 0 11px rgba(18,26,34,.72),
+      inset 0 0 0 13px rgba(70,92,110,.22),
+      inset 0 0 40px 6px rgba(8,14,20,.32)}
+  #cockpit .pillar{position:absolute;top:0;bottom:0;width:9px;
+    background:linear-gradient(90deg,rgba(28,38,48,.86),rgba(16,24,32,.88))}
+  #cockpit .pillar.l{left:38%}
+  #cockpit .pillar.r{right:38%}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- ============ cockpit glass (first person) ============ -->
+<div id="cockpit">
+  <canvas id="glassC"></canvas>
+  <div class="glare"></div>
+  <div class="pillar l"></div>
+  <div class="pillar r"></div>
+  <div class="mullion"></div>
+  <div class="frame"></div>
+</div>
+
+<!-- ============ HUD ============ -->
+<div id="hud">
+  <div id="inst" class="hpanel ui-block">
+    <div class="hlbl" style="margin-bottom:6px">CVN-78 · 舰况</div>
+    <div class="row"><span class="k">航速</span><span class="v"><span id="iSpeed">0.0</span><small>kn</small></span></div>
+    <div class="row"><span class="k">航向</span><span class="v"><span id="iHdg">000</span><small>°</small></span></div>
+    <div class="row"><span class="k">横摇 ROLL</span><span class="v" id="iRoll">0.0°</span></div>
+    <div class="row"><span class="k">纵摇 PITCH</span><span class="v" id="iPitch">0.0°</span></div>
+    <div class="row"><span class="k">浪高</span><span class="v"><span id="iWave">0.0</span><small>m</small></span></div>
+    <div class="row"><span class="k">锚</span><span class="v" id="iAnchor">收起</span></div>
+    <div class="row"><span class="k">舵角</span><span class="v" id="iRudder">0°</span></div>
+  </div>
+
+  <div id="adi" class="hpanel">
+    <div class="hlbl">姿态仪</div>
+    <canvas id="adiC" width="368" height="368"></canvas>
+  </div>
+
+  <div id="dmg" class="hpanel">
+    <div class="hlbl">舰体完整度</div>
+    <div class="meter ok" id="mInt"><i style="right:0%"></i></div>
+    <div class="hlbl" style="margin-top:12px">进水量</div>
+    <div class="meter ok" id="mFlood"><i style="right:100%"></i></div>
+    <div id="dmgState" style="font-size:10px;color:var(--txt-dim);margin-top:10px;letter-spacing:.08em">状态正常</div>
+  </div>
+
+  <div id="tsu" class="hpanel ui-block">
+    <div class="hlbl">海啸 · 触发</div>
+    <div class="opt s" data-tier="small"><span class="nm">小型海啸</span><span class="hh">2–3 m</span></div>
+    <div class="opt m" data-tier="medium"><span class="nm">中型海啸</span><span class="hh">6–7 m</span></div>
+    <div class="opt l" data-tier="large"><span class="nm">大型海啸</span><span class="hh">11–15 m</span></div>
+    <div style="font-size:9.5px;color:var(--txt-dim);margin-top:10px;letter-spacing:.06em">快捷键 1 / 2 / 3</div>
+    <div id="tsuBear" style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px;display:none">
+      <div class="hlbl">来袭方位</div>
+      <canvas id="tsuC" width="300" height="132" style="width:150px;height:66px;display:block;margin:6px auto 0"></canvas>
+      <div id="tsuHint" style="font-size:9.5px;color:var(--txt-dim);text-align:center;letter-spacing:.05em"></div>
+    </div>
+  </div>
+
+  <div id="thr" class="hpanel ui-block">
+    <div class="hlbl">马力 TELEGRAPH</div>
+    <div class="lever" id="lever">
+      <div class="track"></div><div class="fill" id="leverFill"></div>
+      <div class="knob" id="leverKnob"></div>
+    </div>
+    <div id="thrPct">0<small>%</small></div>
+    <div id="thrOrder">停车</div>
+  </div>
+
+  <div id="alert" class="hpanel">
+    <div class="a1" id="alertT">海啸来袭</div>
+    <div class="a2" id="alertS">—</div>
+  </div>
+
+  <div id="cams" class="hpanel ui-block">
+    <div class="c on" data-cam="orbit">环绕</div>
+    <div class="c" data-cam="chase">跟随</div>
+    <div class="c" data-cam="bridge">舰桥</div>
+    <div class="c" data-cam="deck">甲板</div>
+    <div class="c" data-cam="cinema">海啸视角</div>
+  </div>
+
+  <div id="log" class="hpanel"></div>
+
+  <div id="help">
+    <div class="box">
+      <h3>操 作 说 明</h3>
+      <div class="grid">
+        <div class="kk"><span>W / S</span><span>前进 / 后退（增减马力）</span></div>
+        <div class="kk"><span>A / D</span><span>左舵 / 右舵</span></div>
+        <div class="kk"><span>Shift / Ctrl</span><span>全速前进 / 全速后退</span></div>
+        <div class="kk"><span>X</span><span>停车</span></div>
+        <div class="kk"><span>空格</span><span>抛锚 / 起锚</span></div>
+        <div class="kk"><span>1 / 2 / 3</span><span>触发小 / 中 / 大型海啸</span></div>
+        <div class="kk"><span>鼠标拖动</span><span>360° 环绕观察</span></div>
+        <div class="kk"><span>滚轮</span><span>拉近 / 拉远</span></div>
+        <div class="kk"><span>C</span><span>切换视角</span></div>
+        <div class="kk"><span>R</span><span>重置航态</span></div>
+        <div class="kk"><span>H</span><span>本说明</span></div>
+        <div class="kk"><span>P / Esc</span><span>暂停</span></div>
+      </div>
+      <div class="note">
+        海啸始终从<b>舰艏方向</b>推来 —— 现实中深海海啸就是这样一道长周期涌浪，而不是一堵水墙。<br>
+        迎浪时主要考验纵摇与拍击；一旦失去航速、被涌浪推成横向，就会开始剧烈横摇，<br>
+        横摇超过约 27° 时飞行甲板边缘入水，复原力矩骤降，这时才真的可能倾覆。
+      </div>
+    </div>
+  </div>
+
+  <div id="pause">
+    <h2>已 暂 停</h2>
+    <div class="btn ui-block" id="btnResume">继续</div>
+    <div class="btn ghost ui-block" id="btnBackLobby">返回机库</div>
+  </div>
+</div>
+
+<!-- ============ LOADING ============ -->
+<div class="screen" id="loading">
+  <div class="bg"></div><div class="vign"></div>
+  <div class="inner">
+    <h1>钢 铁 巨 舰</h1>
+    <h2>STEEL LEVIATHAN · TSUNAMI</h2>
+    <div class="barwrap"><i id="barFill"></i></div>
+    <div class="barmeta"><span id="barPct">1%</span><span id="barMsg">初始化海洋模型</span></div>
+    <div class="tip" id="tip">正在生成 337 米飞行甲板与舰岛结构…</div>
+    <div class="btn" id="enterBtn">进 入 机 库</div>
+  </div>
+</div>
+
+<!-- ============ LOBBY ============ -->
+<div class="screen hidden" id="lobby">
+  <div class="bg"></div><div class="vign"></div>
+  <div class="wrap">
+    <div class="eyebrow">Hangar / 机库</div>
+    <div class="title">选择你的舰船</div>
+    <div class="sub">当前版本仅开放航空母舰。后续将陆续加入驱逐舰、巡洋舰、补给舰与潜艇。</div>
+    <div class="cards" id="shipCards">
+      <div class="card sel" data-ship="carrier">
+        <div class="tag">可 用</div>
+        <div class="ico">🛳</div>
+        <h3>核动力航空母舰</h3>
+        <p>参考福特级 / 尼米兹级。满载排水量十万吨，全通式飞行甲板，四部弹射器。</p>
+        <div class="stat">
+          舰长 <b>337 m</b> · 舰宽 <b>78 m</b><br>
+          吃水 <b>12.2 m</b> · 排水量 <b>100,000 t</b><br>
+          横摇周期 <b>约 12 s</b>
+        </div>
+      </div>
+      <div class="card locked" data-ship="destroyer">
+        <div class="tag">开发中</div>
+        <div class="ico">🚤</div>
+        <h3>导弹驱逐舰</h3>
+        <p>更轻、更快、更灵活，但也更容易被浪打翻。</p>
+        <div class="stat">敬请期待</div>
+      </div>
+      <div class="card locked" data-ship="submarine">
+        <div class="tag">开发中</div>
+        <div class="ico">🌊</div>
+        <h3>攻击型核潜艇</h3>
+        <p>可下潜规避海面涌浪，代价是失去对海面的感知。</p>
+        <div class="stat">敬请期待</div>
+      </div>
+    </div>
+    <div class="foot">
+      <div class="sub" style="margin:0">已选择：<b id="selName">核动力航空母舰</b></div>
+      <div class="btn" id="toMode">下 一 步</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODE ============ -->
+<div class="screen hidden" id="mode">
+  <div class="bg"></div><div class="vign"></div>
+  <div class="wrap">
+    <div class="eyebrow">Scenario / 模式</div>
+    <div class="title">选择游戏模式</div>
+    <div class="sub">普通模式下海面平静，你可以自由航行，随时手动触发任意规模的海啸。</div>
+    <div class="cards">
+      <div class="card sel" data-mode="free">
+        <div class="tag">推 荐</div>
+        <div class="ico">⚓</div>
+        <h3>普通模式 · 自由航行</h3>
+        <p>无限海域，海况平缓。随时选择小 / 中 / 大型海啸，练习操舰与观察舰体姿态。</p>
+        <div class="stat">海况 <b>1.2 m 轻浪</b><br>海啸 <b>手动触发</b></div>
+      </div>
+      <div class="card locked" data-mode="random">
+        <div class="tag">开发中</div>
+        <div class="ico">🌪</div>
+        <h3>随机海况模式</h3>
+        <p>海况随机恶化，海啸随时可能不期而至，考验真实应变。</p>
+        <div class="stat">敬请期待</div>
+      </div>
+    </div>
+    <div class="foot">
+      <div class="btn ghost" id="backLobby">返回</div>
+      <div class="btn" id="startGame">启 航</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ RESULT ============ -->
+<div class="screen hidden" id="result">
+  <div class="bg"></div><div class="vign"></div>
+  <div class="wrap">
+    <div class="eyebrow" id="rEyebrow">After action report</div>
+    <div class="rbig" id="rTitle">舰 体 倾 覆</div>
+    <div class="sub" id="rSub" style="margin-bottom:0">…</div>
+    <div class="rgrid">
+      <div><div class="k">最大横摇</div><div class="v"><span id="rRoll">0</span><small>°</small></div></div>
+      <div><div class="k">最大纵摇</div><div class="v"><span id="rPitch">0</span><small>°</small></div></div>
+      <div><div class="k">最大浪高</div><div class="v"><span id="rWave">0</span><small>m</small></div></div>
+      <div><div class="k">坚持时长</div><div class="v"><span id="rTime">0</span><small>s</small></div></div>
+    </div>
+    <div class="foot" style="justify-content:center">
+      <div class="btn" id="againBtn">再 来 一 次</div>
+      <div class="btn ghost" id="toLobbyBtn">返回机库</div>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.module.js",
+    "three/addons/": "./node_modules/three/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
