@@ -148,10 +148,10 @@ export class Ocean {
       uEnvMap:      { value: null },
       uSunDir:      { value: new THREE.Vector3(0, 1, 0) },
       uSunColor:    { value: new THREE.Color(1, 0.95, 0.85) },
-      uDeepColor:   { value: new THREE.Color(0x04202e) },
-      uShallowColor:{ value: new THREE.Color(0x0d5c6e) },
-      uSSSColor:    { value: new THREE.Color(0x1ea08a) },
-      uFoamColor:   { value: new THREE.Color(0xdfeaf0) },
+      uDeepColor:   { value: new THREE.Color(0x02141f) },
+      uShallowColor:{ value: new THREE.Color(0x083a4e) },
+      uSSSColor:    { value: new THREE.Color(0x0e7d8a) },
+      uFoamColor:   { value: new THREE.Color(0xe6f0f5) },
       uFogColor:    { value: new THREE.Color(0x9fb3c4) },
       uFogDensity:  { value: 0.000115 },
       uRippleNrm:   { value: ripple },
@@ -262,12 +262,12 @@ export class Ocean {
           vec3 sky = textureCube(uEnvMap, R).rgb;
 
           float fres = pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 5.0);
-          // capped at 0.72: physically a grazing sea is nearly a mirror, but a
-          // full mirror makes the ocean read as flat white haze, and the bright
-          // Preetham horizon then blows the whole lower frame out.
-          fres = mix(0.022, 0.72, fres);
+          // capped at 0.78: the sea should read as a dark mirror that
+          // carries strong sky reflections — the "波光粼粼" look comes from
+          // the sharp glitter field on top of it, not from a white haze
+          fres = mix(0.028, 0.78, fres);
 
-          vec3 col = mix(deep, sky * 0.80, fres);
+          vec3 col = mix(deep, sky * 0.88, fres);
 
           // ---- sun glitter ---------------------------------------------
           // Three octaves: a hard specular glint, the broader sparkle field,
@@ -278,15 +278,15 @@ export class Ocean {
           vec3 H = normalize(uSunDir + V);
           float nh = max(dot(N, H), 0.0);
           float specFade = 0.30 + 0.70 * fade;
-          float spec = (pow(nh, 900.0) * 13.0
-                     + pow(nh, 130.0) * 1.4
-                     + pow(nh, 26.0)  * 0.20) * specFade;
+          float spec = (pow(nh, 900.0) * 24.0
+                     + pow(nh, 130.0) * 2.4
+                     + pow(nh, 26.0)  * 0.32) * specFade;
           col += uSunColor * spec;
 
           // ---- subsurface scattering through thin crests ----------------
           float back = pow(clamp(dot(V, -uSunDir), 0.0, 1.0), 3.0);
           float thin = smoothstep(0.05, 0.75, vHeight * 0.16 + 0.28);
-          col += uSSSColor * back * thin * 0.55;
+          col += uSSSColor * back * thin * 0.70;
 
           // ---- foam / whitecaps ----------------------------------------
           float foam = vFoam;

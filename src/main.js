@@ -160,9 +160,10 @@ class Game {
   buildWaves() {
     this.waveUniforms = makeWaveUniforms(THREE);
     this.field = new WaveField();
-    // Calm, strongly directional sea. The wind and swell both come from the
-    // same direction the tsunami will arrive from, so the flanks stay quiet.
-    this.field.buildSea(1.6, 1, 0, 0.45, 62);
+    // An everyday sea with real swell (Hs ≈ 2.6 m): the ocean must never be
+    // a flat lake — she should be working, spray coming over the bow at
+    // speed, before any tsunami is fired.
+    this.field.buildSea(2.6, 1, 0, 0.45, 62);
     this.ocean = new Ocean({
       waveUniforms: this.waveUniforms,
       extent: 12000, seg: this.q.oceanSeg, grade: this.q.grade,
@@ -481,11 +482,19 @@ class Game {
     }
 
     // ---- weather --------------------------------------------------
-    // A tsunami drags a squall with it: ramp the storm toward 1 while the
-    // event is live (or while she is going down) and ease back afterwards.
-    const stormTarget = (this.tsunami.active
-      || this.damage.state === 'sinking' || this.damage.state === 'lost') ? 1 : 0;
-    this.storm += (stormTarget - this.storm) * (1 - Math.exp(-dt * 0.55));
+    // A squall builds and passes like weather does, over tens of seconds:
+    // a first darkening while the wave is still inbound, full storm as it
+    // arrives, then a slow clear. The sea itself swells with it — the
+    // ambient wave field grows up to ~1.7× (field.agitation), while the
+    // tsunami packet itself is untouched, so the mean sea level holds and
+    // the event reads as one train pushing through a rising sea.
+    const stormTarget = this.damage.state === 'sinking' || this.damage.state === 'lost'
+      ? 1
+      : this.tsunami.state === 'active' ? 1
+        : this.tsunami.state === 'inbound' ? 0.45 : 0;
+    this.storm += (stormTarget - this.storm) * (1 - Math.exp(-dt * 0.13));
+    this.field.agitation += (1 + this.storm * 0.7 - this.field.agitation)
+      * (1 - Math.exp(-dt * 0.13));
     this.skySys.setStorm(this.storm);
     this.ocean.setFog(this.skySys.scene.fog.color, this.skySys.fogDensity);
     this.rain.update(dt, this.camera.position, this.storm);

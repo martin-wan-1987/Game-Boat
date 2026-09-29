@@ -761,7 +761,7 @@ function buildDeck(mats) {
   const shape = deckShape();
 
   // top surface with UVs derived from world x/z
-  const topGeo = new THREE.ShapeGeometry(shape, 12);
+  const topGeo = new THREE.ShapeGeometry(shape, 24);
   {
     const pos = topGeo.attributes.position;
     const uv = new Float32Array(pos.count * 2);
@@ -1590,8 +1590,8 @@ export function createCarrier({ quality = 'high' } = {}) {
   const group = new THREE.Group();
   const mats = shipMaterials();
 
-  const hullStations = quality === 'low' ? 60 : 96;
-  const ring = quality === 'low' ? 16 : 22;
+  const hullStations = quality === 'low' ? 80 : 160;
+  const ring = quality === 'low' ? 18 : 32;
 
   const hull = buildHull(mats.hull, mats.hullPort, hullStations, ring);
   group.add(hull);

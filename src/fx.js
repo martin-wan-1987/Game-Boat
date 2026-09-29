@@ -583,15 +583,15 @@ export class Rain {
   constructor(count = 2400) {
     this.count = count;
     this.box = { w: 300, h: 170 };
-    this.wind = 9;                       // m/s sideways drift
+    this.wind = 16;                      // m/s sideways drift — a squall, not a drizzle
     this.pos = new Float32Array(count * 2 * 3);
     this.vel = new Float32Array(count);  // per-drop fall speed
     this.len = new Float32Array(count);  // streak length
     this.center = new THREE.Vector3();
 
     for (let i = 0; i < count; i++) {
-      this.vel[i] = 34 + Math.random() * 26;
-      this.len[i] = 1.4 + Math.random() * 2.6;
+      this.vel[i] = 46 + Math.random() * 34;
+      this.len[i] = 2.0 + Math.random() * 3.6;
       const j = i * 6;
       this.pos[j] = (Math.random() - 0.5) * this.box.w;
       this.pos[j + 1] = Math.random() * this.box.h;
@@ -602,7 +602,7 @@ export class Rain {
     geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
     this.geo = geo;
     this.mat = new THREE.LineBasicMaterial({
-      color: 0xc2d8ea, transparent: true, opacity: 0, depthWrite: false,
+      color: 0xcfdcEC, transparent: true, opacity: 0, depthWrite: false,
     });
     this.mesh = new THREE.LineSegments(geo, this.mat);
     this.mesh.frustumCulled = false;
@@ -611,7 +611,7 @@ export class Rain {
   }
 
   update(dt, camPos, intensity) {
-    this.mat.opacity = intensity * 0.40;
+    this.mat.opacity = intensity * 0.55;
     this.mesh.visible = intensity > 0.02;
     if (!this.mesh.visible) return;
 

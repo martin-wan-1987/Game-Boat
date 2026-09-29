@@ -148,29 +148,31 @@ export class SkySystem {
    * Storm state, 0 (calm) .. 1 (full squall). Called every frame from the main
    * loop, so it is cheap by design: it only nudges uniform/intensity values.
    *
-   * The look we are after is the one you get just before a big sea hits —
-   * the key light drops, the horizon closes in, and the whole palette goes a
-   * cold slate grey. That contrast is what makes the tsunami feel like an
-   * event rather than a big wave on a nice day.
+   * A squall is DARKNESS and RAIN, not fog: the sun collapses, the sky
+   * greys over and the palette goes cold slate — but the horizon stays
+   * visible (fog rises only ~40%, not the old ×8.6 that read as pea soup
+   * the instant a tsunami was fired).
    */
   setStorm(t) {
     const k = THREE.MathUtils.clamp(t, 0, 1);
     this._storm = k;
-    this.sunLight.intensity = 2.9 - k * 1.7;
-    this.hemi.intensity = 0.32 + k * 0.10;
-    // hazier atmosphere
-    this.sky.material.uniforms.turbidity.value = 6.5 + k * 7.0;
-    this.sky.material.uniforms.rayleigh.value = 2.2 + k * 0.6;
+    this.sunLight.intensity = 2.9 - k * 2.2;      // 2.9 -> 0.7
+    this.hemi.intensity = 0.32 + k * 0.06;
+    // heavy, dark overcast
+    this.sky.material.uniforms.turbidity.value = 6.5 + k * 9.5;
+    this.sky.material.uniforms.rayleigh.value = 2.2 + k * 0.5;
+    this.sky.material.uniforms.mieCoefficient.value = 0.005 + k * 0.020;
+    this.sky.material.uniforms.mieDirectionalG.value = 0.82 + k * 0.10;
 
-    const dens = 0.000145 + k * 0.00110;
+    const dens = 0.000145 + k * 0.00006;          // barely hazier, no fog wall
     this.scene.fog.density = dens;
     this.fogDensity = dens;
     if (this.fogColor) {
-      const storm = new THREE.Color(0.40, 0.46, 0.53);
+      const storm = new THREE.Color(0.34, 0.39, 0.46);
       this.scene.fog.color.copy(this.fogColor).lerp(storm, k);
     }
     if (this.scene.environmentIntensity !== undefined) {
-      this.scene.environmentIntensity = 0.42 - k * 0.24;
+      this.scene.environmentIntensity = 0.42 - k * 0.26;
     }
   }
 

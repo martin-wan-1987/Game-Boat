@@ -78,6 +78,12 @@ export class WaveField {
     this.tsunami = [];
     this.time = 0;
 
+    // Sea-state multiplier: 1 = the calibrated everyday sea, up to ~1.7 as a
+    // squall builds. Applied identically by the CPU sampler and the GPU
+    // shader (uAgit) so physics and visuals stay one surface. The tsunami
+    // train is NOT scaled — a storm raises the ambient sea, not the event.
+    this.agitation = 1;
+
     // tsunami packet envelope (super-Gaussian travelling along tsuDir)
     this.tsuActive = false;
     this.tsuDirX = 1;
@@ -174,14 +180,9 @@ export class WaveField {
 
     // Phase speed. A deep-ocean tsunami runs at ~200 m/s and would be gone
     // before you could react, so this models a tsunami that has shoaled onto
-    // the continental shelf (c = sqrt(g*h), h ~ 40-60 m). Slower, much steeper,
-    // and it puts the encounter period in the same neighbourhood as the ship's
-    // own natural periods — which is where the danger actually lives.
-    //
-    // It is also deliberately brisk: the player asked for the wave to close
-    // fast enough to read as a landmark event, not a slow swell. At ~30 m/s
-    // the leading crest covers the 850 m approach in about half a minute.
-    const speed = o.speed ?? (21 + o.height * 1.15);     // m/s
+    // the continental shelf (c = sqrt(g*h), h ~ 40-60 m). Brisk enough to
+    // read as a landmark event pushing in at a purposeful pace, not a crawl.
+    const speed = o.speed ?? (26 + o.height * 1.2);     // m/s
     const crests = Math.min(o.crests ?? 7, MAX_TSU);
     // A real tsunami front is not a plane wave: refraction and the source
     // geometry mean successive crests arrive a few degrees apart. This is what
@@ -333,22 +334,23 @@ export class WaveField {
 
     for (let i = 0; i < this.sea.length; i++) {
       const w = this.sea[i];
+      const agit = this.agitation;
       const f = w.k * (w.dx * bx + w.dz * bz) - w.omega * t + w.phase;
       const S = Math.sin(f), C = Math.cos(f);
-      const QA = w.steep * w.amp;
+      const QA = w.steep * w.amp * agit;
       px += QA * w.dx * C;
       pz += QA * w.dz * C;
-      py += w.amp * S;
+      py += w.amp * agit * S;
       const k = w.k;
       txx += -QA * k * w.dx * w.dx * S;
       txz += -QA * k * w.dx * w.dz * S;
-      txy += w.amp * k * w.dx * C;
+      txy +=  w.amp * agit * k * w.dx * C;
       tzx += -QA * k * w.dx * w.dz * S;
       tzz += -QA * k * w.dz * w.dz * S;
-      tzy += w.amp * k * w.dz * C;
+      tzy +=  w.amp * agit * k * w.dz * C;
       vx += QA * w.dx * w.omega * S;
       vz += QA * w.dz * w.omega * S;
-      vy += -w.amp * w.omega * C;
+      vy += -w.amp * agit * w.omega * C;
     }
 
     if (this.tsuActive) {
@@ -446,6 +448,7 @@ uniform float uTsuT0;           // time at which the packet was spawned
 
 uniform float uTime;
 uniform float uCamDist;         // distance from camera, for LOD fade
+uniform float uAgit;            // sea-state multiplier (CPU field.agitation)
 
 struct WaveSample {
   vec3  pos;
@@ -483,7 +486,7 @@ WaveSample sampleWaves(vec2 p) {
     vec4 B = uSeaB[i];
     // amplitude LOD: short waves vanish with distance to avoid aliasing
     float fade = 1.0 - smoothstep(B.w * 0.45, B.w, uCamDist);
-    float amp = A.z * fade;
+    float amp = A.z * uAgit * fade;
     if (amp < 0.0005) continue;
     float f = B.x * dot(A.xy, p) - B.y * uTime + B.z;
     float S = sin(f), C = cos(f);
@@ -580,6 +583,7 @@ export function applyWaveUniforms(uniforms, field) {
   uniforms.uTsuEnv.value.set(field.tsuOriginX, field.tsuOriginZ,
                              field.tsuSpeed, field.tsuWidth);
   uniforms.uTsuT0.value = field.tsuSpawnT;
+  uniforms.uAgit.value = field.agitation;
 }
 
 /** Allocate the uniform block shared by every shader that samples waves. */
@@ -598,6 +602,7 @@ export function makeWaveUniforms(THREE) {
     uTsuT0:     { value: 0 },
     uTime:      { value: 0 },
     uCamDist:   { value: 0 },
+    uAgit:      { value: 1 },
   };
 }
 
