@@ -150,6 +150,13 @@ export class CameraRig {
         // the sea, exactly the reference view.
         const local = new THREE.Vector3(55.4, 38.9, 31);
         const p = local.clone().applyQuaternion(q).add(shipPos);
+        // One rule for every rig: THE LENS NEVER GOES UNDER. A mega-tsunami
+        // face or the final sink can bury the bridge itself — without this
+        // clamp the camera sits inside opaque water and the screen is black.
+        // Clamped, the view skims the crest instead: a wash-over, not a
+        // blackout.
+        const wy = field.heightAt(p.x, p.z) + 1.2;
+        if (p.y < wy) p.y = wy;
         const look = new THREE.Vector3(600, 24, 24).applyQuaternion(q).add(shipPos);
         if (snap) cam.position.copy(p);
         else cam.position.lerp(p, 1 - Math.exp(-dt * 30));
@@ -159,6 +166,9 @@ export class CameraRig {
       case 'deck': {
         const local = new THREE.Vector3(-120, 21.8, -18);
         const p = local.clone().applyQuaternion(q).add(shipPos);
+        // same never-underwater rule (see bridge)
+        const wy = field.heightAt(p.x, p.z) + 1.2;
+        if (p.y < wy) p.y = wy;
         const look = new THREE.Vector3(300, 14, -6).applyQuaternion(q).add(shipPos);
         if (snap) cam.position.copy(p);
         else cam.position.lerp(p, 1 - Math.exp(-dt * 30));

@@ -157,7 +157,7 @@ export class SkySystem {
     const k = THREE.MathUtils.clamp(t, 0, 1);
     this._storm = k;
     this.sunLight.intensity = 2.9 - k * 2.2;      // 2.9 -> 0.7
-    this.hemi.intensity = 0.32 + k * 0.06;
+    this.hemi.intensity = 0.32 + k * 0.12;        // storm overcast lifts ambient
     // heavy, dark overcast
     this.sky.material.uniforms.turbidity.value = 6.5 + k * 9.5;
     this.sky.material.uniforms.rayleigh.value = 2.2 + k * 0.5;

@@ -259,6 +259,11 @@ export class Ocean {
           // ---- base water colour ---------------------------------------
           float hn = clamp(vHeight * 0.06 + 0.5, 0.0, 1.0);
           vec3 deep = mix(uDeepColor, uShallowColor, hn * 0.85);
+          // A breath of the haze colour keeps the water body off the black
+          // floor: in a storm the sky dimms, the reflections dim with it,
+          // and a shadowed crest could otherwise sink under display black —
+          // half the frame reads as a blackout, not weather.
+          deep = mix(deep, uFogColor, 0.16);
 
           // ---- sky reflection ------------------------------------------
           vec3 R = reflect(-V, N);

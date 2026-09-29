@@ -537,6 +537,21 @@ class Game {
     });
     this.hud.update(dt, this.hudState());
 
+    // ---- underwater safety net --------------------------------------
+    // Every rig clamps itself above the surface, but between frames (heavy
+    // pitch, a crest arriving mid-frame) a lens can still dip in. If it
+    // does, the screen must read as green water — never black.
+    {
+      const cam = this.camera.position;
+      const depth = this.field.heightAt(cam.x, cam.z) - cam.y;
+      const el = this._uwEl || (this._uwEl = document.getElementById('underwater'));
+      const want = THREE.MathUtils.clamp(depth / 1.5, 0, 1) * 0.9;
+      if (Math.abs((this._uwOn || 0) - want) > 0.02) {
+        this._uwOn = want;
+        el.style.opacity = want.toFixed(2);
+      }
+    }
+
     // ---- sky follows the ship -------------------------------------
     this.skySys.followTarget(this.phys.position);
 

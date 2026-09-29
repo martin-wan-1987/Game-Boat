@@ -223,6 +223,9 @@
      Sits above the WebGL canvas but below the HUD. The canvas inside it is
      where the rain droplets and the wiper sweep are drawn; the frame/mullion
      give the shot a real "looking out of the bridge" framing. */
+  #underwater{position:fixed;inset:0;z-index:9;pointer-events:none;opacity:0;
+    transition:opacity .15s linear;
+    background:linear-gradient(180deg,rgba(16,74,82,.62),rgba(6,44,52,.78))}
   #cockpit{position:fixed;inset:0;z-index:10;pointer-events:none;
     opacity:0;transition:opacity .5s ease}
   #cockpit.on{opacity:1}
@@ -249,6 +252,11 @@
 </head>
 <body>
 <div id="app"></div>
+
+<!-- ============ underwater wash-over (safety net) ============
+     If a lens ever ends up inside a wave for a frame or two, the screen
+     must read as green water, never black. -->
+<div id="underwater"></div>
 
 <!-- ============ cockpit glass (first person) ============ -->
 <div id="cockpit">
