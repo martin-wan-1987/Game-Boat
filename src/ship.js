@@ -737,14 +737,14 @@ function buildBulb(mat) {
  * (First 15 entries are the starboard side, bow -> stern; the rest run the
  * port side stern -> bow — deckHalfWidth() and the net strips rely on it.) */
 const DECK_OUTLINE = [
-  // starboard: bow wedge -> straight catwalk edge -> stern corner
-  [169, 0], [167, 4.5], [162, 10], [154, 15.5], [142, 20],
-  [118, 24.5], [90, 27.5], [60, 29.5], [20, 30.5], [-40, 30.5],
-  [-100, 30.5], [-140, 31.5], [-160, 33], [-168, 34],
-  // port: transom corner -> angled-deck bulge -> diagonal to the bow
-  [-168, -43], [-152, -43.5], [-118, -43.5], [-80, -43],
-  [-40, -42], [0, -40.5], [40, -38], [80, -35],
-  [115, -29.5], [140, -21.5], [156, -13.5], [164, -6.5],
+  // starboard: blunt bow face -> straight catapult-side edge -> stern
+  [172.5, 0], [171.5, 6], [169, 11], [164.5, 15.5], [157, 19.5], [145, 23.5],
+  [125, 27.5], [100, 30], [70, 31.5], [30, 32.5], [-30, 32.5], [-90, 32.5],
+  [-130, 33.5], [-155, 35], [-168, 36],
+  // port: transom corner -> angled-deck bulge -> diagonal to the bow face
+  [-168, -43], [-152, -43.5], [-118, -43.5], [-80, -43], [-40, -42],
+  [0, -40.5], [40, -38], [80, -35], [112, -30], [132, -25], [146, -19.5],
+  [157, -14], [164.5, -9], [169, -4.5], [171.5, -6],
 ];
 
 function deckShape() {
@@ -761,7 +761,7 @@ function deckShape() {
  *  gallery struts, safety nets, deck-edge fittings — and by the spray emitter
  *  so water is born OUTBOARD of the deck instead of clipping through it. */
 export function deckHalfWidth(x, side) {
-  const pts = side > 0 ? DECK_OUTLINE.slice(0, 14) : DECK_OUTLINE.slice(13);
+  const pts = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
   for (let i = 0; i < pts.length - 1; i++) {
     const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
     if ((x1 >= x && x >= x2) || (x2 >= x && x >= x1)) {
@@ -783,9 +783,12 @@ export function deckHalfWidth(x, side) {
 function buildGallery(mats) {
   const g = new THREE.Group();
 
-  // vertical closing wall flush with the deck edge
+  // vertical closing wall flush with the deck edge. 7 m tall: it runs from
+  // the deck slab down past the hull's top edge, so a beam view sees hull
+  // + wall with NO see-through under the overhang (the old 2.6 m band left
+  // the 23 m port overhang open scaffolding from low angles).
   const shape = deckShape();
-  const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: 2.6, bevelEnabled: false });
+  const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: 7.0, bevelEnabled: false });
   wallGeo.rotateX(Math.PI / 2);
   wallGeo.translate(0, SHIP.deckY - 1.86, 0);
   const wall = new THREE.Mesh(wallGeo, mats.deckSide);
@@ -801,7 +804,7 @@ function buildGallery(mats) {
       const u = THREE.MathUtils.clamp((11 + keel) / (SHIP.hullTopY + keel), 0, 1);
       const { halfW } = hullSection(t, u);
       const z0 = side * (halfW + 0.6), y0 = 11;
-      const z1 = side * (deckHalfWidth(x, side) - 0.4), y1 = SHIP.deckY - 4.4;
+      const z1 = side * (deckHalfWidth(x, side) - 0.4), y1 = SHIP.deckY - 6.6;
       const dz = z1 - z0, dy = y1 - y0;
       const L = Math.hypot(dz, dy);
       const m = new THREE.Mesh(new THREE.BoxGeometry(1.0, L, 0.9), mats.greyDark);
@@ -822,7 +825,7 @@ function buildGallery(mats) {
     for (const side of [1, -1]) {
       const outline = side > 0 ? DECK_OUTLINE.slice(0, 14) : DECK_OUTLINE.slice(13);
       const A = [], B = [];
-      const yHull = 17.4, yBand = SHIP.deckY - 4.4;
+      const yHull = 17.4, yBand = SHIP.deckY - 6.6;
       for (let i = 0; i < outline.length; i++) {
         const [x, z] = outline[i];
         const t = THREE.MathUtils.clamp((x + HALF_L) / SHIP.length, 0, 1);
@@ -925,7 +928,7 @@ function buildDeck(mats) {
   // real outline (the old fixed stanchion row floated off the deck edge)
   const netTex = makeNetTexture();
   for (const side of [1, -1]) {
-    const pts = side > 0 ? DECK_OUTLINE.slice(0, 14) : DECK_OUTLINE.slice(13);
+    const pts = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
     for (let i = 0; i < pts.length - 1; i++) {
       const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
       const len = Math.hypot(x2 - x1, z2 - z1);
@@ -956,8 +959,8 @@ function buildDeck(mats) {
       catwalk.add(b);
     }
   };
-  mkEdge(DECK_OUTLINE.slice(0, 14));
-  mkEdge(DECK_OUTLINE.slice(14).concat([DECK_OUTLINE[0]]));
+  mkEdge(DECK_OUTLINE.slice(0, 15));
+  mkEdge(DECK_OUTLINE.slice(15).concat([DECK_OUTLINE[0]]));
   catwalk.traverse((o) => { o.castShadow = true; });
   group.add(catwalk);
 
@@ -1712,9 +1715,9 @@ export function buildPatches(stations = 26, ring = 14) {
 function buildBowSponson(mats) {
   const g = new THREE.Group();
   const s = new THREE.Shape();
-  s.moveTo(122, -33);
-  s.lineTo(166, -25);
-  s.lineTo(166, -33);
+  s.moveTo(95, -37);
+  s.lineTo(148, -25.5);
+  s.lineTo(148, -37);
   s.closePath();
   const geo = new THREE.ExtrudeGeometry(s, { depth: 3.0, bevelEnabled: false });
   geo.rotateX(Math.PI / 2);
