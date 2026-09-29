@@ -25,6 +25,7 @@ export class Input {
     this.rudderTarget = 0;
     this.mouse = { x: 0, y: 0, down: false, button: 0 };
     this.enabled = true;
+    this.walkMode = false;     // in walk mode WASD steers the walker, not the ship
     this._bind();
   }
 
@@ -36,6 +37,13 @@ export class Input {
       if (e.repeat) { e.preventDefault(); return; }
       const k = e.key.toLowerCase();
       this.keys.add(k);
+
+      // walking: movement keys belong to the walker; swallow them here so
+      // they never touch the engine order or the helm
+      if (this.walkMode && ['w', 'a', 's', 'd', 'shift'].includes(k)) {
+        e.preventDefault();
+        return;
+      }
 
       if (k === 'w') this.nudgeThrottle(0.05);
       if (k === 's') this.nudgeThrottle(-0.05);
@@ -100,9 +108,10 @@ export class Input {
     this.hooks.onThrottle?.(this.throttle);
   }
 
-  /** Called every frame: rudder springs back to centre like a real helm. */
+  /** Called every frame: rudder springs back to centre like a real helm
+   *  (held neutral while walking — the ship holds her course). */
   update(dt) {
-    if (!this.enabled) { this.rudder = 0; return; }
+    if (!this.enabled || this.walkMode) { this.rudder = 0; return; }
     let want = 0;
     if (this.keys.has('a')) want -= 1;
     if (this.keys.has('d')) want += 1;

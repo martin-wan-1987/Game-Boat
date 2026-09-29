@@ -783,12 +783,11 @@ export function deckHalfWidth(x, side) {
 function buildGallery(mats) {
   const g = new THREE.Group();
 
-  // vertical closing wall flush with the deck edge. 7 m tall: it runs from
-  // the deck slab down past the hull's top edge, so a beam view sees hull
-  // + wall with NO see-through under the overhang (the old 2.6 m band left
-  // the 23 m port overhang open scaffolding from low angles).
+  // Vertical closing wall flush with the deck edge, 12.3 m tall: deck slab
+  // down to y ~ 5.9. With the bottom closure plate below, the overhang is a
+  // four-sided solid box — no see-through from ANY angle, 360 degrees.
   const shape = deckShape();
-  const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: 7.0, bevelEnabled: false });
+  const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: 12.3, bevelEnabled: false });
   wallGeo.rotateX(Math.PI / 2);
   wallGeo.translate(0, SHIP.deckY - 1.86, 0);
   const wall = new THREE.Mesh(wallGeo, mats.deckSide);
@@ -815,43 +814,41 @@ function buildGallery(mats) {
     }
   }
 
-  // Enclosing diaphragm: continuous sloped plating from the hull's top
-  // edge out to the gallery band. Without it the overhang zone — 23 m wide
-  // under the angled deck on the port side — is open scaffolding, and a
-  // beam view sees straight through to the sea: "one side was never built".
+  // Two closures turn the overhang into a solid box, watertight to the eye
+  // from any of the 360 degrees:
+  //  - upper diaphragm: sloped plating from the hull's top edge out to the
+  //    band (the shadowed gallery ceiling)
+  //  - bottom plate: from the hull's side out to the band's lower edge, so
+  //    a low quarter view cannot see under the structure to the sea
   {
     const skirtMat = mats.deckSide.clone();
     skirtMat.side = THREE.DoubleSide;
-    for (const side of [1, -1]) {
-      const outline = side > 0 ? DECK_OUTLINE.slice(0, 14) : DECK_OUTLINE.slice(13);
-      const A = [], B = [];
-      const yHull = 17.4, yBand = SHIP.deckY - 6.6;
-      for (let i = 0; i < outline.length; i++) {
-        const [x, z] = outline[i];
-        const t = THREE.MathUtils.clamp((x + HALF_L) / SHIP.length, 0, 1);
-        const { halfW } = hullSection(t, 1);
-        const dw = Math.abs(z);
-        A.push(x, yHull, side * halfW);          // on the hull's top edge
-        B.push(x, yBand, side * dw);             // under the gallery band
+    const closure = (yHull, yBand) => {
+      for (const side of [1, -1]) {
+        const outline = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
+        const verts = [], idx = [];
+        for (let i = 0; i < outline.length; i++) {
+          const [x, z] = outline[i];
+          const t = THREE.MathUtils.clamp((x + HALF_L) / SHIP.length, 0, 1);
+          const { halfW } = hullSection(t, 1);
+          verts.push(x, yHull, side * halfW);       // against the hull
+          verts.push(x, yBand, side * Math.abs(z)); // at the outer band
+        }
+        for (let i = 0; i < outline.length - 1; i++) {
+          const a0 = i * 2, b0 = i * 2 + 1, a1 = a0 + 2, b1 = b0 + 2;
+          idx.push(a0, b0, a1, b1, a1, b0);
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+        geo.setIndex(idx);
+        geo.computeVertexNormals();
+        const skirt = new THREE.Mesh(geo, skirtMat);
+        skirt.castShadow = true; skirt.receiveShadow = true;
+        g.add(skirt);
       }
-      const verts = [];
-      const idx = [];
-      for (let i = 0; i < outline.length; i++) {
-        verts.push(A[i * 3], A[i * 3 + 1], A[i * 3 + 2]);
-        verts.push(B[i * 3], B[i * 3 + 1], B[i * 3 + 2]);
-      }
-      for (let i = 0; i < outline.length - 1; i++) {
-        const a0 = i * 2, b0 = i * 2 + 1, a1 = a0 + 2, b1 = b0 + 2;
-        idx.push(a0, b0, a1, b1, a1, b0);
-      }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-      geo.setIndex(idx);
-      geo.computeVertexNormals();
-      const skirt = new THREE.Mesh(geo, skirtMat);
-      skirt.castShadow = true; skirt.receiveShadow = true;
-      g.add(skirt);
-    }
+    };
+    closure(17.4, SHIP.deckY - 6.6);   // upper gallery ceiling
+    closure(6.2, 5.9);                 // bottom plate of the overhang box
   }
 
   // sponson pods along the gallery band — weapon mounts, boat davit bases
@@ -1903,7 +1900,8 @@ export function createCarrier({ quality = 'high' } = {}) {
   group.add(island);
   group.add(buildDetails(mats));
   group.add(buildHullDetails(mats));
-  group.add(buildBowSponson(mats));
+  // (no standalone bow sponson: seen from above it read as a floating block
+  // beside the hull. The tall gallery band now wraps the bow instead.)
   group.add(buildElevatorSills(mats));
   const ensign = buildEnsign();
   group.add(ensign);

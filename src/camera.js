@@ -6,16 +6,33 @@
  *   bridge    locked to the island — you feel every degree of roll
  *   deck      standing on the flight deck
  *   cinema    parked in front of the tsunami, watching the ship take it
+ *   walk      FIRST PERSON on the flight deck: WASD to walk, Shift to run,
+ *             drag to look — air-walled to the deck outline (see walkStep)
  *
  * In orbit mode the horizon stays level, which is exactly what you want when
  * judging how far over she is going.
  */
 import * as THREE from 'three';
+import { deckHalfWidth, SHIP } from './ship.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 // scratch for the "keep the lens out of the hull" test (orbit mode)
 const _qInv = new THREE.Quaternion();
 const _loc = new THREE.Vector3();
+
+/* Air-wall collision volumes on the deck (ship-local, metres): the walker
+ * is pushed out of these. Island footprint + weapon mounts. */
+const DECK_BLOCKS = [
+  [29, 67, 18, 32],      // island (x0, x1, z0, z1)
+  [143.5, 148.5, -20.5, -14.5], [143.5, 148.5, 14.5, 20.5],  // bow CIWS
+  [-161, -155, 27.5, 34.5],                                  // stern CIWS
+  [133, 139, -22.5, -15.5], [133, 139, 15.5, 22.5],          // ESSM
+];
+// tractors and RIBs (circles: x, z, r)
+const DECK_PILLARS = [
+  [84, 26, 2.6], [-46, 34, 2.6], [-100, 30, 2.6], [30, -34, 2.6], [-130, 30, 2.6],
+  [-20, 34, 4], [-31, 34, 4],    // RIB boats
+];
 
 export class CameraRig {
   constructor(camera) {
@@ -37,6 +54,12 @@ export class CameraRig {
     this.fov = 48;
     this.shake = 0;
     this._snap = false;       // set true by setMode; consumed by the next update
+    // walk-mode state (ship-local): position on deck, facing, head bob
+    this.walkX = 40;
+    this.walkZ = 0;
+    this.walkYaw = 0;         // 0 = facing the bow (+x)
+    this.walkPitch = 0;
+    this.walkPhase = 0;
     this._v = new THREE.Vector3();
     this._q = new THREE.Quaternion();
     this._e = new THREE.Euler();
@@ -46,6 +69,79 @@ export class CameraRig {
   orbitBy(dx, dy) {
     this.theta -= dx;
     this.phi = THREE.MathUtils.clamp(this.phi - dy, this.minPhi, this.maxPhi);
+  }
+
+  /** Mouse-look for the walk rig (drag = turn head). */
+  walkLook(dx, dy) {
+    this.walkYaw -= dx;
+    this.walkPitch = THREE.MathUtils.clamp(this.walkPitch - dy, -1.15, 1.15);
+  }
+
+  /**
+   * Walk-rig frame: WASD/Shift movement in ship-local space, air-walled to
+   * the deck outline (inset ~0.9 m — the rail) and pushed out of the island
+   * and weapon mounts. The camera rides the deck (she heels, you heel) and
+   * the lens obeys the never-underwater rule like every other rig.
+   */
+  walkStep(dt, keys, shipObj, field) {
+    const run = keys.has('shift');
+    const sp = run ? 7 : 3.2;
+    let f = 0, s = 0;
+    if (keys.has('w')) f += 1;
+    if (keys.has('s')) f -= 1;
+    if (keys.has('a')) s -= 1;
+    if (keys.has('d')) s += 1;
+    if (f || s) {
+      const l = Math.hypot(f, s);
+      const fx = Math.cos(this.walkYaw), fz = -Math.sin(this.walkYaw);
+      const sx = -fz, sz = fx;
+      this.walkX += (f * fx + s * sx) * (sp / l) * dt;
+      this.walkZ += (f * fz + s * sz) * (sp / l) * dt;
+      this.walkPhase += dt * (run ? 11 : 7.5);
+    } else {
+      this.walkPhase += dt * 1.4;      // idle sway
+    }
+
+    // ---- air walls ---------------------------------------------------
+    this.walkX = THREE.MathUtils.clamp(this.walkX, -166, 170.8);
+    const side = this.walkZ >= 0 ? 1 : -1;
+    const rail = deckHalfWidth(this.walkX, side) - 0.9;
+    if (Math.abs(this.walkZ) > rail) {
+      this.walkZ = side * Math.max(0, rail);
+    }
+    for (const [x0, x1, z0, z1] of DECK_BLOCKS) {
+      if (this.walkX > x0 - 0.7 && this.walkX < x1 + 0.7 &&
+          this.walkZ > z0 - 0.7 && this.walkZ < z1 + 0.7) {
+        // push out along the shallowest penetration
+        const px = Math.min(this.walkX - x0, x1 - this.walkX);
+        const pz = Math.min(this.walkZ - z0, z1 - this.walkZ);
+        if (px < pz) this.walkX += (this.walkX - (x0 + x1) / 2 > 0 ? px + 0.7 : -(px + 0.7));
+        else this.walkZ += (this.walkZ - (z0 + z1) / 2 > 0 ? pz + 0.7 : -(pz + 0.7));
+      }
+    }
+    for (const [cx, cz, r] of DECK_PILLARS) {
+      const dx = this.walkX - cx, dz = this.walkZ - cz;
+      const d = Math.hypot(dx, dz);
+      if (d < r + 0.6 && d > 1e-4) {
+        this.walkX = cx + dx / d * (r + 0.6);
+        this.walkZ = cz + dz / d * (r + 0.6);
+      }
+    }
+
+    // ---- camera ------------------------------------------------------
+    const cam = this.camera;
+    const bob = (f || s)
+      ? Math.abs(Math.sin(this.walkPhase)) * 0.055
+      : Math.sin(this.walkPhase) * 0.012;
+    const eye = this._v.set(this.walkX, SHIP.deckY + 1.72 + bob, this.walkZ)
+      .applyQuaternion(shipObj.quaternion).add(shipObj.position);
+    // never under water — same rule as every rig
+    const wy = field.heightAt(eye.x, eye.z) + 1.2;
+    if (eye.y < wy) eye.y = wy;
+    cam.position.copy(eye);
+    // attitude: ship's heel/pitch carried into the head, then yaw/pitch
+    this._e.set(this.walkPitch, this.walkYaw, 0, 'YXZ');
+    cam.quaternion.setFromEuler(this._e).premultiply(shipObj.quaternion);
   }
 
   zoomBy(d) {
@@ -219,9 +315,11 @@ export class CameraRig {
         cam.lookAt(this.smoothTarget);
         break;
       }
+      case 'walk': {
+        // handled by walkStep(), driven from the main loop every frame
+        break;
+      }
     }
-
-    // ---- speed feedback -------------------------------------------
     // A rig that looks identical at 3 kn and 32 kn feels dead. Three cues,
     // all scaling with speed over ground:
     //   • FOV opens up (the "world rushing at you" effect) — strong in the

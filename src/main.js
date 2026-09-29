@@ -236,6 +236,7 @@ class Game {
     this.input = new Input(this.renderer.domElement, {
       onOrbit: (dx, dy) => {
         if (this.rig.mode === 'orbit') this.rig.orbitBy(dx * 0.005, dy * 0.005);
+        if (this.rig.mode === 'walk') this.rig.walkLook(dx * 0.0032, dy * 0.0032);
       },
       onZoom: (d) => { if (this.rig.mode === 'orbit') this.rig.zoomBy(d); },
       onThrottle: (v) => { this.hud.setThrottle(v); },
@@ -341,7 +342,7 @@ class Game {
   }
 
   cycleCamera() {
-    const modes = ['orbit', 'chase', 'bridge', 'deck', 'cinema'];
+    const modes = ['orbit', 'chase', 'bridge', 'deck', 'cinema', 'walk'];
     const i = modes.indexOf(this.rig.mode);
     this.setCamera(modes[(i + 1) % modes.length]);
   }
@@ -529,6 +530,10 @@ class Game {
     }
 
     // ---- camera / hud ---------------------------------------------
+    // walk rig: first-person on the deck; keys steer the WALKER, not the ship
+    const walking = this.rig.mode === 'walk';
+    this.input.walkMode = walking;
+    if (walking) this.rig.walkStep(dt, this.input.keys, this.shipMesh, this.field);
     this.rig.update(dt, this.shipMesh, this.field, this.tsunami.dir, speed);
     this.input.update(dt);
     this.audio.update(dt, {
