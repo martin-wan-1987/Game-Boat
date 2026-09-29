@@ -20,7 +20,6 @@ import { TsunamiManager, TSUNAMI_TIERS } from './tsunami.js';
 import { DamageModel } from './damage.js';
 import { HullFoam, WakeRibbon, Particles, SprayEmitter, Rain, PropWash } from './fx.js';
 import { CockpitOverlay } from './cockpit.js';
-import { DeckCrew } from './crew.js';
 import { Audio } from './audio.js';
 
 /* ------------------------------------------------------------------ *
@@ -174,10 +173,6 @@ class Game {
 
   buildShip() {
     this.shipMesh = createCarrier({ quality: this.q.shipDetail });
-    // the deck crew rides the hull: parented to the ship so it heels with
-    // the deck (six instanced draws for 48 articulated sailors)
-    this.crew = new DeckCrew(this.q.shipDetail === 'low' ? 28 : 48);
-    this.shipMesh.add(this.crew.group);
     this.scene.add(this.shipMesh);
     this.shipSpin = this.shipMesh.userData.spin;
   }
@@ -440,14 +435,6 @@ class Game {
     this.shipMesh.position.copy(this.phys.position);
     this.shipMesh.quaternion.copy(this.phys.quaternion);
     if (this.shipSpin) this.shipSpin.rotation.y += dt * 0.6;
-
-    // deck crew walk their rounds; past ~16 deg of heel they have long since
-    // gone below / strapped in, and frozen mannequins on a dying deck read wrong
-    {
-      const rollDeg = Math.abs(this.phys.attitude.roll) * 57.2958;
-      this.crew.group.visible = rollDeg < 16;
-      if (this.crew.group.visible) this.crew.update(dt);
-    }
 
     // ---- tsunami + damage ----------------------------------------
     // bow punch first: how deep the forefoot is buried in the face of the

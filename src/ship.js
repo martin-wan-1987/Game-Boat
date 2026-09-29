@@ -285,13 +285,27 @@ function makeDeckTexture() {
     };
 
     // ---- non-skid base -------------------------------------------
+    // Fine, low-contrast speckle: the earlier 3 px / 14 % dots aliased into
+    // a visible mosaic at grazing angles from the bridge. 2 px dots at
+    // lower alpha survive as texture without a pixel-grid read.
     g.fillStyle = '#3a3e43';
     g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 30000; i++) {
-      const a = Math.random() * 0.14;
+    for (let i = 0; i < 52000; i++) {
+      const a = Math.random() * 0.09;
       g.fillStyle = Math.random() < 0.5
         ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`;
-      g.fillRect(Math.random() * w, Math.random() * h, 3, 3);
+      g.fillRect(Math.random() * w, Math.random() * h, 2, 2);
+    }
+    // long, faint traffic streaks along the launch direction — breaks the
+    // uniformity of the non-skid at large scale without repeating
+    for (let i = 0; i < 26; i++) {
+      const y = Math.random() * h;
+      const grd = g.createLinearGradient(0, y, w, y + (Math.random() - 0.5) * 40);
+      grd.addColorStop(0, 'rgba(0,0,0,0)');
+      grd.addColorStop(0.5, `rgba(12,12,14,${0.05 + Math.random() * 0.06})`);
+      grd.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grd;
+      g.fillRect(0, y - 3 + (Math.random() - 0.5) * 8, w, 5);
     }
     // deck plates
     g.strokeStyle = 'rgba(18,20,23,0.55)';
@@ -511,10 +525,12 @@ function shipMaterials() {
 
   // Procedural normal maps. Repeat counts are matched to real feature sizes:
   // hull plating ~1.2 m, deck non-skid ~0.5 m, island panels ~0.8 m.
+  // The deck normal map is 1024² at a 6 m tile: the old 512² / 8.4 m tile
+  // repeated visibly from the bridge — the "mosaic deck" complaint.
   const hullNrm = makeNormalTexture(512, 2.0, 14, 1);
   hullNrm.repeat.set(26, 3);
-  const deckNrm = makeNormalTexture(512, 2.6, 22, 2);
-  deckNrm.repeat.set(40, 10);
+  const deckNrm = makeNormalTexture(1024, 2.6, 26, 2);
+  deckNrm.repeat.set(56, 14);
   const islandNrm = makeNormalTexture(512, 1.8, 16, 3);
   islandNrm.repeat.set(6, 3);
   const steelNrm = makeNormalTexture(256, 1.4, 20, 4);
@@ -687,26 +703,27 @@ export function deckHalfWidth(x, side) {
   return 0;
 }
 
-/** The gallery deck + diagonal struts under the flight-deck overhang. On a
+/** The gallery band + diagonal struts under the flight-deck overhang. On a
  *  real carrier the 78 m deck hangs 8-12 m beyond the 41 m hull on both
- *  sides, carried on sponsons — that shadowed step is what makes the profile
- *  read as a carrier instead of a barge with a slab on top. */
+ *  sides, carried on sponsons. The band is a VERTICAL outer wall following
+ *  the full deck outline (from the deck slab's underside down ~2.6 m): an
+ *  earlier version used a plate shrunk inboard from the outline, which left
+ *  a see-through slot between it and the deck edge over the whole length —
+ *  the "one side is missing" hole. A wall flush with the deck edge cannot
+ *  open a gap. */
 function buildGallery(mats) {
   const g = new THREE.Group();
 
-  // gallery plate: the outline pulled inboard, a deck-slab thickness lower
-  const inner = DECK_OUTLINE.map(([x, z]) => [x * 0.965, z * 0.86]);
-  const shape = new THREE.Shape();
-  inner.forEach(([x, z], i) => { if (i === 0) shape.moveTo(x, z); else shape.lineTo(x, z); });
-  shape.closePath();
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: 2.0, bevelEnabled: false });
-  geo.rotateX(Math.PI / 2);
-  geo.translate(0, SHIP.deckY - 2.6, 0);
-  const plate = new THREE.Mesh(geo, mats.deckSide);
-  plate.castShadow = true; plate.receiveShadow = true;
-  g.add(plate);
+  // vertical closing wall flush with the deck edge
+  const shape = deckShape();
+  const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: 2.6, bevelEnabled: false });
+  wallGeo.rotateX(Math.PI / 2);
+  wallGeo.translate(0, SHIP.deckY - 1.86, 0);
+  const wall = new THREE.Mesh(wallGeo, mats.deckSide);
+  wall.castShadow = true; wall.receiveShadow = true;
+  g.add(wall);
 
-  // diagonal struts from the hull side up to the gallery edge
+  // diagonal struts from the hull side up to the gallery band
   for (const side of [1, -1]) {
     for (let x = -150; x <= 150; x += 15) {
       const t = (x + HALF_L) / SHIP.length;
@@ -715,7 +732,7 @@ function buildGallery(mats) {
       const u = THREE.MathUtils.clamp((11 + keel) / (SHIP.hullTopY + keel), 0, 1);
       const { halfW } = hullSection(t, u);
       const z0 = side * (halfW + 0.6), y0 = 11;
-      const z1 = side * (deckHalfWidth(x, side) * 0.87), y1 = SHIP.deckY - 2.7;
+      const z1 = side * (deckHalfWidth(x, side) - 0.4), y1 = SHIP.deckY - 4.4;
       const dz = z1 - z0, dy = y1 - y0;
       const L = Math.hypot(dz, dy);
       const m = new THREE.Mesh(new THREE.BoxGeometry(1.0, L, 0.9), mats.greyDark);
@@ -726,12 +743,12 @@ function buildGallery(mats) {
     }
   }
 
-  // sponson pods along the gallery edge — weapon mounts, boat davit bases
+  // sponson pods along the gallery band — weapon mounts, boat davit bases
   for (const side of [1, -1]) {
     for (const x of [-128, -84, -36, 16, 66, 112]) {
-      const z = side * (deckHalfWidth(x, side) * 0.87 - 1.5);
-      const m = new THREE.Mesh(new THREE.BoxGeometry(8, 1.6, 3.6), mats.grey);
-      m.position.set(x, SHIP.deckY - 1.9, z);
+      const z = side * (deckHalfWidth(x, side) - 1.6);
+      const m = new THREE.Mesh(new THREE.BoxGeometry(8, 1.5, 3.2), mats.grey);
+      m.position.set(x, SHIP.deckY - 2.2, z);
       m.castShadow = true;
       g.add(m);
     }
@@ -1160,16 +1177,63 @@ function buildDetails(mats) {
     return m;
   };
 
-  // CIWS mounts
+  // ---- Phalanx CIWS -------------------------------------------------
+  // Base pedestal -> yaw ring -> drum housing (search-radar dish inside the
+  // white radome on top) -> the 20 mm Gatling cluster: six barrels in a
+  // ring, muzzle clamp, ammunition drum aft. The barrel cluster is what
+  // reads as "gun" from any distance, so it gets real geometry.
   const ciws = (x, z, ry) => {
     const b = new THREE.Group();
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.8, 1.6, 14), mats.white);
-    base.position.y = 0.8; base.castShadow = true;
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(1.5, 16, 12, 0, 6.3, 0, 1.6), mats.white);
-    dome.position.y = 1.6; dome.castShadow = true;
-    const gun = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.42, 2.6, 10), mats.greyDark);
-    gun.rotation.x = Math.PI / 2; gun.position.set(0, 1.7, 2.0);
-    b.add(base, dome, gun);
+    const mk = (geo, mat, y, z = 0, rx = 0) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(0, y, z);
+      m.rotation.x = rx;
+      m.castShadow = true;
+      b.add(m);
+      return m;
+    };
+    // pedestal + trainable yaw ring
+    mk(new THREE.CylinderGeometry(1.05, 1.35, 1.1, 14), mats.greyDark, 0.55);
+    mk(new THREE.CylinderGeometry(0.95, 0.95, 0.5, 14), mats.steel, 1.35);
+    // drum housing (the gun's body), pitched with the mount
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.05, 2.6, 14), mats.white);
+    body.position.set(0, 2.55, 0.25);
+    body.rotation.x = Math.PI / 2 - 0.22;
+    body.castShadow = true;
+    b.add(body);
+    // ammo drum aft of the housing
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.9, 12), mats.white);
+    drum.position.set(0, 2.45, -1.35);
+    drum.rotation.x = Math.PI / 2 - 0.22;
+    drum.castShadow = true;
+    b.add(drum);
+    // white search-radar radome above the muzzle end
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.72, 14, 12), mats.white);
+    dome.position.set(0, 3.35, 0.95);
+    dome.castShadow = true;
+    b.add(dome);
+    // six-barrel Gatling cluster
+    const barrels = new THREE.Group();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const bar = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.075, 0.075, 2.3, 8), mats.black);
+      bar.position.set(Math.cos(a) * 0.30, Math.sin(a) * 0.30, -1.15);
+      bar.rotation.x = Math.PI / 2;
+      barrels.add(bar);
+    }
+    const clamp = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.3, 12), mats.greyDark);
+    clamp.rotation.x = Math.PI / 2;
+    clamp.position.z = -2.2;
+    barrels.add(clamp);
+    const cluster = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.44, 0.5, 12), mats.greyDark);
+    cluster.rotation.x = Math.PI / 2;
+    barrels.add(cluster);
+    barrels.position.set(0, 2.55, 1.65);
+    barrels.rotation.x = -0.22;
+    barrels.traverse((o) => { o.castShadow = true; });
+    b.add(barrels);
+
     b.position.set(x, SHIP.deckY, z);
     b.rotation.y = ry;
     g.add(b);
@@ -1178,14 +1242,39 @@ function buildDetails(mats) {
   ciws(146, 21, 0.3);
   ciws(-158, 33, Math.PI);
 
-  // Sea Sparrow / ESSM launchers
-  for (const [x, z, ry] of [[136, -26, -0.4], [136, 26, 0.4]]) {
-    const l = new THREE.Mesh(new THREE.BoxGeometry(5, 3, 3.4), mats.greyDark);
-    l.position.set(x, SHIP.deckY + 1.6, z);
-    l.rotation.set(-0.35, ry, 0);
-    l.castShadow = true;
-    g.add(l);
-  }
+  // ---- MK-29 ESSM launchers ------------------------------------------
+  // Trainable pedestal under a box of eight launch tubes; the tube mouths
+  // are dark cylinders inset in the box face, which is what makes it read
+  // as a launcher instead of a shed.
+  const essm = (x, z, ry) => {
+    const b = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.3, 1.2, 12), mats.greyDark);
+    base.position.y = 0.6; base.castShadow = true;
+    b.add(base);
+    const box = new THREE.Mesh(new THREE.BoxGeometry(4.4, 1.7, 2.5), mats.grey);
+    box.position.y = 2.4;
+    box.rotation.x = -0.55;
+    box.castShadow = true;
+    b.add(box);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) {
+      const mouth = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.24, 0.24, 0.3, 10), mats.black);
+      mouth.position.set(-1.6 + i * 1.05, 2.4 + (j - 0.5) * 0.78 + 0.95, 1.05);
+      mouth.rotation.x = Math.PI / 2 - 0.55;
+      b.add(mouth);
+      const rim = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.30, 0.30, 0.1, 10), mats.greyDark);
+      rim.position.copy(mouth.position);
+      rim.position.z -= 0.13;
+      rim.rotation.x = Math.PI / 2 - 0.55;
+      b.add(rim);
+    }
+    b.position.set(x, SHIP.deckY, z);
+    b.rotation.y = ry;
+    g.add(b);
+  };
+  essm(136, -26, -0.4);
+  essm(136, 26, 0.4);
 
   // deck tractors
   const tractor = (x, z, ry) => {
@@ -1515,30 +1604,10 @@ export function createCarrier({ quality = 'high' } = {}) {
   group.add(buildDetails(mats));
   group.add(buildHullDetails(mats));
 
-  // ---- air wing -------------------------------------------------
-  const spots = [
-    [96, 24, 0.06], [96, 33, 0.06], [80, 20, -0.05], [80, 33, -0.05],
-    [-50, 32, 0.02], [-72, 32, 0.0], [-94, 32, -0.02],
-    [-52, 15, 0.03], [-74, 15, 0.0],
-    [42, -33, 3.0], [20, -31, 3.0],
-    [-118, 26, 0.05], [-140, 26, 0.0], [-142, 13, 0.03],
-  ];
-  spots.forEach(([x, z, ry], i) => {
-    const a = (i === 3 || i === 9) ? buildHawkeye(mats) : buildHornet(mats);
-    a.position.set(x, SHIP.deckY, z);
-    a.rotation.y = ry;
-    group.add(a);
-  });
-  for (const [x, z, ry] of [[-12, 33, 0.4], [-24, 33, 0.4]]) {
-    const h = buildHelo(mats);
-    h.position.set(x, SHIP.deckY, z);
-    h.rotation.y = ry;
-    group.add(h);
-  }
-
-  // (the deck crew is a separate animated system — see src/crew.js. The old
-  // static capsule people are gone: frozen mannequins scattered randomly on
-  // the deck read as debris, not sailors.)
+  // ---- air wing: REMOVED by request — the ship is modelled as
+  // infrastructure only (parked-aircraft outlines remain painted on the
+  // deck texture). buildHornet/buildHawkeye/buildHelo are kept above for
+  // when the air wing comes back.
 
   // one draw call per material for everything static (see bakeStatic)
   bakeStatic(group);
