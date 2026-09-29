@@ -14,7 +14,9 @@
 
 export const G = 9.81;
 
-export const MAX_SEA = 8;   // ambient sea components
+export const MAX_SEA = 12;  // ambient sea components (a real ocean surface is
+                            // a dense spectrum: more components = less
+                            // "regular wobbling plane", more actual sea)
 export const MAX_TSU = 8;   // tsunami wave-train components (a packet = a wave group)
 
 /* ------------------------------------------------------------------ *
@@ -29,13 +31,13 @@ function rand(min, max) { return min + Math.random() * (max - min); }
  * so the CPU physics solver deliberately ignores it — but it roughens the
  * rendered shape and the specular. Every shader that samples the surface
  * gets the same terms, so foam ribbons still sit exactly on the water. */
-const CHOP_WAVES = Array.from({ length: 4 }, (_, i) => {
-  const ang = (i / 4) * Math.PI + rand(-0.5, 0.5);
-  const len = rand(9, 24);
+const CHOP_WAVES = Array.from({ length: 6 }, (_, i) => {
+  const ang = (i / 6) * Math.PI + rand(-0.5, 0.5);
+  const len = rand(7, 26);
   const k = TAU / len;
   return {
     dx: Math.cos(ang), dz: Math.sin(ang),
-    k, w: Math.sqrt(G * k), a: rand(0.10, 0.26) * (1 - i * 0.12),
+    k, w: Math.sqrt(G * k), a: rand(0.08, 0.24) * (1 - i * 0.09),
     q: rand(0.55, 0.85), ph: rand(0, TAU),
   };
 });

@@ -972,6 +972,38 @@ function buildIsland(mats) {
       CX, Y0 + 17.9, CZ + dz + (dz > 0 ? 1.4 : -1.4));
   }
 
+  // exterior walkways with railings at the flag-bridge and nav-bridge
+  // levels — crews stand on these; a blank-walled tower reads as a mausoleum
+  const walkway = (y, w, d) => {
+    const ledge = new THREE.Mesh(new THREE.BoxGeometry(w, 0.22, d), mats.grey);
+    ledge.position.set(CX, y, CZ);
+    ledge.castShadow = true; ledge.receiveShadow = true;
+    g.add(ledge);
+    const hw = w / 2 - 0.2, hd = d / 2 - 0.2;
+    const post = [];
+    for (let px = -hw; px <= hw; px += 2.6) {
+      post.push([CX + px, y + 0.55, CZ + hd], [CX + px, y + 0.55, CZ - hd]);
+    }
+    for (let pz = -hd + 2.6; pz <= hd - 2.6; pz += 2.6) {
+      post.push([CX - hw, y + 0.55, CZ + pz], [CX + hw, y + 0.55, CZ + pz]);
+    }
+    for (const [px, py, pz] of post) {
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.0, 5), mats.greyDark);
+      p.position.set(px, py, pz);
+      g.add(p);
+    }
+    const railW = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, 0.06), mats.greyDark);
+    railW.position.set(CX, y + 1.05, CZ + hd);
+    g.add(railW);
+    const railW2 = railW.clone(); railW2.position.z = CZ - hd; g.add(railW2);
+    const railS = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, d), mats.greyDark);
+    railS.position.set(CX - hw, y + 1.05, CZ);
+    g.add(railS);
+    const railS2 = railS.clone(); railS2.position.x = CX + hw; g.add(railS2);
+  };
+  walkway(Y0 + 16.85, 28, 10.6);    // flag-bridge gallery
+  walkway(Y0 + 21.0, 24.5, 11.2);   // nav-bridge gallery
+
   // PriFly / air-traffic house above
   add(new THREE.BoxGeometry(16, 2.8, 8), mats.island, CX + 2, Y0 + 22.4, CZ);
   add(new THREE.BoxGeometry(14, 1.1, 8.4), mats.glass, CX + 2, Y0 + 22.6, CZ);
@@ -1393,6 +1425,35 @@ function buildDetails(mats) {
   // ---- vents / ducting along the deck edge ---------------------------
   for (const [x, z, w] of [[-10, -36, 14], [30, -35, 12], [90, -28, 10]]) {
     add(new THREE.BoxGeometry(w, 1.0, 1.6), mats.greyDark, x, SHIP.deckY + 0.5, z);
+  }
+
+  // ---- IFLOLS ("the meatball"): the optical landing aid on the port deck
+  // edge — a light box on legs that pilots line up on. Nothing says "working
+  // carrier" to a carrier fan like this little box.
+  {
+    const z = -deckHalfWidth(-138, -1) + 2.5;
+    for (const dz of [-1.4, 1.4]) {
+      add(new THREE.CylinderGeometry(0.12, 0.12, 3.4, 6), mats.greyDark,
+        -138, SHIP.deckY + 1.7, z + dz);
+    }
+    add(new THREE.BoxGeometry(3.6, 2.2, 1.1), mats.grey, -138, SHIP.deckY + 4.6, z);
+    // the yellow-lit face toward the approach (aft)
+    const face = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.4, 0.12),
+      new THREE.MeshStandardMaterial({
+        color: 0xffd23e, emissive: 0x996f00, roughness: 0.4,
+      }));
+    face.position.set(-138, SHIP.deckY + 4.6, z - 0.56);
+    face.rotation.y = 0.32;
+    g.add(face);
+  }
+
+  // ---- floodlight boxes under the gallery band, spaced along the hull ----
+  for (let x = -140; x <= 140; x += 28) {
+    for (const side of [1, -1]) {
+      const z = side * (deckHalfWidth(x, side) - 0.9);
+      add(new THREE.BoxGeometry(1.1, 0.5, 0.5), mats.greyDark,
+        x, SHIP.deckY - 2.3, z);
+    }
   }
 
   return g;

@@ -242,13 +242,17 @@ export class Ocean {
             vec2 uv2 = vWorld.xz * 0.145 - vec2(uTime * 0.0195, uTime * 0.0138);
             vec3 n1 = texture2D(uRippleNrm, uv1).xyz * 2.0 - 1.0;
             vec3 n2 = texture2D(uRippleNrm, uv2).xyz * 2.0 - 1.0;
-            // NB: a third, very large ripple tile was removed here — at
+            // NB: a third, very LARGE ripple tile was removed here — at
             // orbit-camera range its ~80 m repeat was clearly visible as
-            // concentric banding.
+            // concentric banding. This third octave is FINE (decimetre
+            // capillary), which cannot band: it only adds close-range
+            // sparkle for the bridge and deck rigs.
+            vec3 n3 = texture2D(uRippleNrm,
+              vWorld.xz * 0.37 + vec2(uTime * 0.031, -uTime * 0.024)).xyz * 2.0 - 1.0;
             // the second octave's footprint is rotated 45 deg so the two
             // tiles cannot line up into a visible repeat grid
             vec2 rot2 = mat2(0.7071, -0.7071, 0.7071, 0.7071) * vec2(n2.x, n2.z);
-            vec3 rip = n1 + vec3(rot2.x, 0.0, rot2.y) * 0.6;
+            vec3 rip = n1 + vec3(rot2.x, 0.0, rot2.y) * 0.6 + n3 * 0.35;
             N = normalize(gN + (T * rip.x + B * rip.z) * 0.50 * uRippleAmt * fade);
           }
 
