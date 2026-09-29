@@ -39,8 +39,9 @@ export class Input {
       this.keys.add(k);
 
       // walking: movement keys belong to the walker; swallow them here so
-      // they never touch the engine order or the helm
-      if (this.walkMode && ['w', 'a', 's', 'd', 'shift'].includes(k)) {
+      // they never touch the engine order or the helm. E toggles run mode.
+      if (this.walkMode && ['w', 'a', 's', 'd', 'e'].includes(k)) {
+        if (k === 'e') this.hooks.onToggleRun?.();
         e.preventDefault();
         return;
       }

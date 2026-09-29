@@ -238,6 +238,10 @@ class Game {
         if (this.rig.mode === 'orbit') this.rig.orbitBy(dx * 0.005, dy * 0.005);
         if (this.rig.mode === 'walk') this.rig.walkLook(dx * 0.0032, dy * 0.0032);
       },
+      onToggleRun: () => {
+        this.rig.walkRun = !this.rig.walkRun;
+        this.hud.pushLog(this.rig.walkRun ? '甲板行走 · 奔跑' : '甲板行走 · 慢行', this.time);
+      },
       onZoom: (d) => { if (this.rig.mode === 'orbit') this.rig.zoomBy(d); },
       onThrottle: (v) => { this.hud.setThrottle(v); },
       onAnchor: () => this.toggleAnchor(),

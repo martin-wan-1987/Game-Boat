@@ -60,6 +60,9 @@ export class CameraRig {
     this.walkYaw = 0;         // 0 = facing the bow (+x)
     this.walkPitch = 0;
     this.walkPhase = 0;
+    this.walkRun = false;     // E toggles run mode (sticky, not held)
+    this.walkVX = 0;          // smoothed ship-local velocity
+    this.walkVZ = 0;
     this._v = new THREE.Vector3();
     this._q = new THREE.Quaternion();
     this._e = new THREE.Euler();
@@ -84,23 +87,29 @@ export class CameraRig {
    * the lens obeys the never-underwater rule like every other rig.
    */
   walkStep(dt, keys, shipObj, field) {
-    const run = keys.has('shift');
-    const sp = run ? 7 : 3.2;
+    // speed eases in and out (~0.25 s ramp): instant start/stop is what
+    // made the first version of the walker feel like a sliding cursor
+    const sp = this.walkRun ? 7 : 3.2;
     let f = 0, s = 0;
     if (keys.has('w')) f += 1;
     if (keys.has('s')) f -= 1;
     if (keys.has('a')) s -= 1;
     if (keys.has('d')) s += 1;
+    let tvx = 0, tvz = 0;              // target velocity, ship-local
     if (f || s) {
       const l = Math.hypot(f, s);
       const fx = Math.cos(this.walkYaw), fz = -Math.sin(this.walkYaw);
       const sx = -fz, sz = fx;
-      this.walkX += (f * fx + s * sx) * (sp / l) * dt;
-      this.walkZ += (f * fz + s * sz) * (sp / l) * dt;
-      this.walkPhase += dt * (run ? 11 : 7.5);
-    } else {
-      this.walkPhase += dt * 1.4;      // idle sway
+      tvx = (f * fx + s * sx) * (sp / l);
+      tvz = (f * fz + s * sz) * (sp / l);
     }
+    const k = 1 - Math.exp(-dt * 9);
+    this.walkVX += (tvx - this.walkVX) * k;
+    this.walkVZ += (tvz - this.walkVZ) * k;
+    if (Math.abs(this.walkVX) < 0.01) this.walkVX = 0;
+    if (Math.abs(this.walkVZ) < 0.01) this.walkVZ = 0;
+    this.walkX += this.walkVX * dt;
+    this.walkZ += this.walkVZ * dt;
 
     // ---- air walls ---------------------------------------------------
     this.walkX = THREE.MathUtils.clamp(this.walkX, -166, 170.8);
@@ -130,9 +139,14 @@ export class CameraRig {
 
     // ---- camera ------------------------------------------------------
     const cam = this.camera;
-    const bob = (f || s)
-      ? Math.abs(Math.sin(this.walkPhase)) * 0.055
-      : Math.sin(this.walkPhase) * 0.012;
+    // bob amplitude scales with the SMOOTHED speed (no pop on keypress);
+    // frequency with speed too. A slight lateral sway sells the stride.
+    const spd = Math.hypot(this.walkVX, this.walkVZ);
+    const gait = Math.min(1, spd / 7);
+    this.walkPhase += dt * (1.6 + spd * 1.35);
+    const bob = Math.sin(this.walkPhase * 2) * 0.055 * gait
+              + Math.sin(this.walkPhase * 0.5) * 0.008;
+    const sway = Math.sin(this.walkPhase) * 0.02 * gait;
     const eye = this._v.set(this.walkX, SHIP.deckY + 1.72 + bob, this.walkZ)
       .applyQuaternion(shipObj.quaternion).add(shipObj.position);
     // never under water — same rule as every rig
@@ -140,8 +154,14 @@ export class CameraRig {
     if (eye.y < wy) eye.y = wy;
     cam.position.copy(eye);
     // attitude: ship's heel/pitch carried into the head, then yaw/pitch
-    this._e.set(this.walkPitch, this.walkYaw, 0, 'YXZ');
+    this._e.set(this.walkPitch, this.walkYaw, sway, 'YXZ');
     cam.quaternion.setFromEuler(this._e).premultiply(shipObj.quaternion);
+    // a touch of FOV stretch at full run — speed you can feel
+    const wantFov = this.fov + gait * gait * 6;
+    if (Math.abs(cam.fov - wantFov) > 0.02) {
+      cam.fov += (wantFov - cam.fov) * (1 - Math.exp(-dt * 4));
+      cam.updateProjectionMatrix();
+    }
   }
 
   zoomBy(d) {
