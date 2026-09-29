@@ -35,15 +35,16 @@ export const TSUNAMI_TIERS = {
     period: 12.0, distance: 850, crests: 7,
     warn: '危险！可能横摇失稳甚至倾覆',
   },
-  // The end-of-the-world event. A sustained wave GROUP — every follower is
-  // itself a large tsunami — plus two more large events auto-fired behind it.
-  // The ship WILL sink; the damage model floors the flooding rate while the
-  // event runs so she goes down slowly, watchably, over about a minute.
+  // THE water wall. ONE single crest, 100-150 m tall and deliberately THIN
+  // (short period -> narrow face): she rams it, punches THROUGH, and the
+  // buoyancy spike on the way through flings her into the air. What happens
+  // when she comes back down is a roll of the dice — see DamageModel's
+  // landing roll. Then — guaranteed, slowly — she goes down.
   ultra: {
-    id: 'ultra', label: '超巨型海啸', hMin: 28, hMax: 32,
-    period: 14.0, distance: 950, crests: 8,
-    profile: [1.00, 0.92, 0.80, 0.88, 0.74, 0.78, 0.66, 0.62],
-    followups: 2,
+    id: 'ultra', label: '超级巨型海啸', hMin: 100, hMax: 150,
+    period: 6.5, distance: 950, crests: 1,
+    speed: 52,                // m/s: a wall with purpose — 950 m in ~18 s
+    followups: 0,
     warn: '灭顶之灾 · 她挺不过这一场',
   },
 };
@@ -106,10 +107,9 @@ export class TsunamiManager {
       distance: tier.distance,
       crests: tier.crests,
       profile: tier.profile || null,   // ultra: sustained group, no decay
+      speed: tier.speed || null,       // ultra: explicit wall speed
     });
     this.field.tsuLife = 0;
-    // the ultra event brings its own escort: this many follow-up large
-    // events fire automatically as each wave group clears
     this.followups = tier.followups || 0;
 
     this.state = 'inbound';

@@ -147,7 +147,7 @@ class Game {
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(
-      48, window.innerWidth / window.innerHeight, 1.5, 42000);
+      48, window.innerWidth / window.innerHeight, 0.9, 42000);
 
     window.addEventListener('resize', () => this.onResize());
   }

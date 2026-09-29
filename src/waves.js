@@ -218,9 +218,12 @@ export class WaveField {
       // non-dispersive: every crest rides at the packet speed
       w.omega = w.k * speed;
       w.speed = speed;
-      // The leading crest is near-breaking (Q -> 1 gives it a sharp, almost
-      // curling face); the rest of the group is progressively softer.
-      w.steep = i === 0 ? 1.02 : rand(0.62, 0.86);
+      // The leading crest is near-breaking (Q>1 gives it a sharp, curling
+      // face) and curls harder the bigger the event — the ultra wall has to
+      // overhang; the rest of the group is progressively softer.
+      w.steep = i === 0
+        ? Math.min(1.15, 0.90 + o.height * 0.0065)
+        : rand(0.62, 0.86);
       w.sOff = sOff;
       w.phase = -w.k * sOff;     // crest i sits at sRel = sOff
       w.lodDist = 1e9;           // the tsunami never fades with distance
@@ -237,6 +240,9 @@ export class WaveField {
     this.tsuDistance0 = o.distance;
     this.tsuSpawnT = this.time;
     this.tsuActive = true;
+    // Mega-walls are ELEVATION waves: crest-only, no abyssal trough behind
+    // (see the tsunami loop in sampleBase / sampleWaves)
+    this.tsuElevation = o.height >= 60;
 
     this.calibrateTsunami(o.height);
     return this;
@@ -263,10 +269,12 @@ export class WaveField {
     const env = this.envelope(sMain + this.tsuSpeed * (t - this.tsuSpawnT));
     if (env <= 1e-4) return 0;
     let y = 0;
+    const elev = this.tsuElevation ? 1 : 0;
     for (const w of this.tsunami) {
       const si = (bx - this.tsuOriginX) * w.dx + (bz - this.tsuOriginZ) * w.dz;
       const sRel = si + this.tsuSpeed * (t - this.tsuSpawnT);
-      y += w.amp * env * Math.sin(w.k * sRel + w.phase);
+      const S = Math.sin(w.k * sRel + w.phase);
+      y += w.amp * env * (elev ? (0.5 + 0.5 * S) : S);
     }
     return y;
   }
@@ -447,6 +455,7 @@ uniform vec4  uTsuA[MAX_TSU];   // dirX, dirZ, amp, steep
 uniform vec4  uTsuB[MAX_TSU];   // k, omega, phase, (unused)
 uniform vec4  uTsuEnv;          // originX, originZ, speed, width
 uniform float uTsuT0;           // time at which the packet was spawned
+uniform float uTsuElev;         // 1 = elevation-only mega wall (no trough)
 
 uniform float uTime;
 uniform float uCamDist;         // distance from camera, for LOD fade
@@ -585,6 +594,7 @@ export function applyWaveUniforms(uniforms, field) {
   uniforms.uTsuEnv.value.set(field.tsuOriginX, field.tsuOriginZ,
                              field.tsuSpeed, field.tsuWidth);
   uniforms.uTsuT0.value = field.tsuSpawnT;
+  uniforms.uTsuElev.value = field.tsuElevation ? 1 : 0;
   uniforms.uAgit.value = field.agitation;
 }
 
@@ -602,6 +612,7 @@ export function makeWaveUniforms(THREE) {
     uTsuB:      { value: arr(MAX_TSU) },
     uTsuEnv:    { value: new THREE.Vector4(0, 0, 0, 1) },
     uTsuT0:     { value: 0 },
+    uTsuElev:   { value: 0 },
     uTime:      { value: 0 },
     uCamDist:   { value: 0 },
     uAgit:      { value: 1 },

@@ -103,20 +103,31 @@ export class CameraRig {
         const wy = field.heightAt(wanted.x, wanted.z) + 6;
         if (wanted.y < wy) wanted.y = wy;
 
-        // ...and never let it go *inside* the hull. The hull is drawn
-        // DoubleSide, so a camera that ends up within it sees unlit interior
-        // faces — which strobe black as you orbit. Push the point outside an
-        // ellipsoid that bounds hull + flight deck. (The island is FrontSide,
-        // so clipping it is harmless and the close pass is left alone.)
+        // ...and never *inside* the ship. Two exclusion volumes in ship-local
+        // space: the hull+deck ellipsoid, and one around the ISLAND. The
+        // island was long uncovered — orbiting high and close put the lens
+        // inside the tower, and the near plane slicing its walls threw torn
+        // black triangles across the view. The 1.06 push-out margin keeps
+        // the lens beyond the near plane after the correction.
         _qInv.copy(q).invert();
         _loc.copy(wanted).sub(shipPos).applyQuaternion(_qInv);
-        _loc.y -= 4;
-        const ex = _loc.x / 178, ey = _loc.y / 25, ez = _loc.z / 45;
-        const dd = ex * ex + ey * ey + ez * ez;
-        if (dd < 1) {
-          const push = 1 / Math.sqrt(Math.max(dd, 1e-4));
-          _loc.multiplyScalar(push);
-          _loc.y += 4;
+        const pushOutOf = (cx, cy, cz, ex, ey, ez) => {
+          const dx = (_loc.x - cx) / ex, dy = (_loc.y - cy) / ey, dz = (_loc.z - cz) / ez;
+          const d = dx * dx + dy * dy + dz * dz;
+          if (d < 1.0) {
+            const push = 1.06 / Math.sqrt(Math.max(d, 1e-4));
+            _loc.x = cx + (_loc.x - cx) * push;
+            _loc.y = cy + (_loc.y - cy) * push;
+            _loc.z = cz + (_loc.z - cz) * push;
+            return true;
+          }
+          return false;
+        };
+        // hull + flight deck + gallery band
+        const inHull = pushOutOf(0, 4, 0, 178, 27, 47);
+        // island tower incl. mast (footprint x 31..65, z 26..36, top ~58)
+        const inIsland = pushOutOf(48, 40, 25, 21, 25, 14);
+        if (inHull || inIsland) {
           wanted.copy(_loc).applyQuaternion(q).add(shipPos);
         }
 
@@ -148,7 +159,7 @@ export class CameraRig {
         // deck toward the bow, which sits ~10° below the view axis and so
         // lands low in frame — you watch the deck rush and the stem part
         // the sea, exactly the reference view.
-        const local = new THREE.Vector3(55.4, 38.9, 31);
+        const local = new THREE.Vector3(55.4, 38.9, 25);
         const p = local.clone().applyQuaternion(q).add(shipPos);
         // One rule for every rig: THE LENS NEVER GOES UNDER. A mega-tsunami
         // face or the final sink can bury the bridge itself — without this
@@ -157,14 +168,18 @@ export class CameraRig {
         // blackout.
         const wy = field.heightAt(p.x, p.z) + 1.2;
         if (p.y < wy) p.y = wy;
-        const look = new THREE.Vector3(600, 24, 24).applyQuaternion(q).add(shipPos);
+        const look = new THREE.Vector3(600, 24, 19).applyQuaternion(q).add(shipPos);
         if (snap) cam.position.copy(p);
         else cam.position.lerp(p, 1 - Math.exp(-dt * 30));
         cam.lookAt(look);
         break;
       }
       case 'deck': {
-        const local = new THREE.Vector3(-120, 21.8, -18);
+        // 2.4 m above the deck (the catwalk edge), looking down the flight
+        // deck toward the bow. Slightly higher than eye height on purpose:
+        // at exactly 1.8 m a few degrees of pitch dips the lens below the
+        // deck plane ahead, which used to read as a black flash.
+        const local = new THREE.Vector3(-120, 22.4, -18);
         const p = local.clone().applyQuaternion(q).add(shipPos);
         // same never-underwater rule (see bridge)
         const wy = field.heightAt(p.x, p.z) + 1.2;

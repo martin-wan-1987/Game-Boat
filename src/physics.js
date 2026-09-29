@@ -224,19 +224,36 @@ export class ShipPhysics {
       // hull does not cancel), so only the vertical part is applied here.
       // The righting / heeling moments fall out of the *lever arm* of those
       // vertical forces, which is exactly how naval architecture does it.
-      const pb = RHO * G * depth * area;
-      buoySum += pb * (-n.y);
-      tmpF.set(0, -pb * n.y, 0);
-      this.applyForceAtPoint(tmpF, wp, F, T);
+      //
+      // 'deck' patches (flight deck + superstructure, WIDER than the
+      // watertight hull) carry NO hydrostatic pressure: a real flight deck
+      // is not watertight, and counting downward pressure on it while the
+      // narrower hull pushes up is a net-DOWN force that grows with depth —
+      // a buried ship used to accelerate to the seabed instead of fighting
+      // back to the surface. The depth term also saturates: a fully
+      // submerged hull displaces a FIXED volume, while linear-in-depth
+      // would grow forever.
+      if (patch.kind !== 'deck') {
+        const pb = RHO * G * Math.min(depth, 38) * area;
+        buoySum += pb * (-n.y);
+        tmpF.set(0, -pb * n.y, 0);
+        this.applyForceAtPoint(tmpF, wp, F, T);
+      }
 
       // ---- hydrodynamic drag (relative to moving water) ----
       // patch velocity = v + omega x r
       const r = this._r.copy(wp).sub(this.position);
       const pv = this._v.crossVectors(this.omega, r).add(this.velocity);
-      // relative to the local water velocity
-      const rvx = pv.x - sample.vx;
-      const rvy = pv.y - sample.vy;
-      const rvz = pv.z - sample.vz;
+      // relative to the local water velocity. The water's own velocity is
+      // SATURATED at ±12 m/s: a 100 m wall carries orbital velocities of
+      // ~30 m/s, and quadratic drag against that simply sucks a hull to the
+      // seabed — burying her, flinging her up and dropping her back is what
+      // a real wall does. Buoyancy (position-based) is untouched, so she
+      // still rides the crest face up. Cap removal condition: a proper
+      // breaking-wave/body interaction model.
+      const rvx = pv.x - THREE.MathUtils.clamp(sample.vx, -12, 12);
+      const rvy = pv.y - THREE.MathUtils.clamp(sample.vy, -12, 12);
+      const rvz = pv.z - THREE.MathUtils.clamp(sample.vz, -12, 12);
       const vn = rvx * n.x + rvy * n.y + rvz * n.z;
       // Cd is deliberately low: a flat-plate Cd would double-count pressure
       // drag on the forebody without any pressure recovery aft, which made the
@@ -377,6 +394,19 @@ export class ShipPhysics {
     this.velocity.x += (F.x / massEff) * dt;
     this.velocity.y += (F.y / massEff) * dt;
     this.velocity.z += (F.z / massEff) * dt;
+
+    // Numerical guard for the mega-wall: buoyancy there runs ~5-8x weight,
+    // and an unbounded integrator turns that into a projectile. The caps
+    // sit far above anything real seas produce (30 kn = 15 m/s; the wall
+    // itself throws her ~30-40 m/s) so ordinary physics never touches them.
+    {
+      const vMax = 60;
+      const v2 = this.velocity.lengthSq();
+      if (v2 > vMax * vMax) this.velocity.multiplyScalar(vMax / Math.sqrt(v2));
+      const wMax = 1.1;
+      const w2 = this.omega.lengthSq();
+      if (w2 > wMax * wMax) this.omega.multiplyScalar(wMax / Math.sqrt(w2));
+    }
 
     // angular: tau_eff = tau - omega x (I omega)
     const Iw = this.updateWorldInertia();

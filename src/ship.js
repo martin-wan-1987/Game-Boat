@@ -452,23 +452,23 @@ function makeDeckTexture() {
       g.strokeRect(Math.min(a, b), Math.min(c, d), Math.abs(b - a), Math.abs(d - c));
       g.restore();
     };
-    elev(0, 20, 22, 38);
-    elev(-110, -90, 22, 38);
-    elev(-62, -42, -38, -24);
+    elev(0, 20, 16, 30);
+    elev(-110, -90, 16, 30);
+    elev(-62, -42, -38, -26);
 
     // ---- island footprint ----------------------------------------
     g.save();
     g.globalAlpha = 0.55;
     g.fillStyle = '#20232a';
-    rect(29, 67, 25, 37);
+    rect(29, 67, 19, 31);
     g.restore();
 
     // ---- parking spots -------------------------------------------
     g.strokeStyle = 'rgba(238,240,242,0.34)';
     g.lineWidth = Math.max(2, sz(0.4));
     const spots = [
-      [96, 24], [96, 33], [80, 20], [80, 33],
-      [-50, 32], [-72, 32], [-94, 32],
+      [96, 24], [96, 26], [80, 20], [80, 26],
+      [-50, 28], [-72, 28], [-94, 28],
       [-52, 15], [-74, 15],
       [42, -33], [20, -31],
       [-118, 26], [-140, 26], [-142, 13],
@@ -492,7 +492,7 @@ function makeDeckTexture() {
     g.fillStyle = 'rgba(238,242,246,0.6)';
     g.font = `bold ${sz(12)}px "Helvetica Neue", Arial, sans-serif`;
     g.textAlign = 'center';
-    g.fillText('78', px(132), pz(31));
+    g.fillText('78', px(132), pz(25));
     g.restore();
   }, { aniso: 16 });
 }
@@ -601,6 +601,12 @@ function shipMaterials() {
     deckTop: std({
       map: deckTex, normalMap: deckNrm, normalScale: new THREE.Vector2(0.75, 0.75),
       color: 0xffffff, roughness: 0.90, metalness: 0.14, envInt: 0.45,
+      // DoubleSide: from deck-level rigs the lens rides 1-2 m above the
+      // plane, and a few degrees of pitch puts the deck AHEAD below the
+      // sightline — a FrontSide top would backface-cull there and the view
+      // would see straight through the ship to the shadowed sea: a huge
+      // near-black flash. Seen from below, the deck must still be a deck.
+      side: THREE.DoubleSide,
     }),
     deckSide: std({
       normalMap: steelNrm, normalScale: new THREE.Vector2(0.4, 0.4),
@@ -718,13 +724,27 @@ function buildBulb(mat) {
 /* ------------------------------------------------------------------ *
  * Flight deck
  * ------------------------------------------------------------------ */
+/* Flight-deck outline, bow-first. This is the PLAN FORM, and it is what
+ * makes a carrier a carrier:
+ *   • the bow is a sharp wedge meeting near the centreline
+ *   • the STARBOARD edge runs almost straight (catapult side) ~30-33 m off
+ *     the centreline, with the elevators cut into it
+ *   • the PORT side carries the angled landing deck: its diagonal edge is
+ *     the widest part of the ship (~-42..-44) from midship aft, tapering
+ *     forward to the bow — that asymmetric bulge is the single strongest
+ *     "this is a carrier" silhouette from above
+ *   • the stern is a broad transom with slightly angled corners
+ * (First 15 entries are the starboard side, bow -> stern; the rest run the
+ * port side stern -> bow — deckHalfWidth() and the net strips rely on it.) */
 const DECK_OUTLINE = [
-  [169, 0], [167, 4], [163, 10], [157, 17], [150, 24], [140, 30],
-  [125, 34.5], [105, 37], [70, 38.5], [20, 39], [-40, 39], [-100, 39],
-  [-135, 38], [-155, 35], [-168, 30],
-  [-168, -42], [-150, -43], [-120, -43], [-80, -42], [-40, -40],
-  [0, -38], [40, -35], [80, -31], [115, -25], [140, -18], [155, -11],
-  [163, -5],
+  // starboard: bow wedge -> straight catwalk edge -> stern corner
+  [169, 0], [167, 4.5], [162, 10], [154, 15.5], [142, 20],
+  [118, 24.5], [90, 27.5], [60, 29.5], [20, 30.5], [-40, 30.5],
+  [-100, 30.5], [-140, 31.5], [-160, 33], [-168, 34],
+  // port: transom corner -> angled-deck bulge -> diagonal to the bow
+  [-168, -43], [-152, -43.5], [-118, -43.5], [-80, -43],
+  [-40, -42], [0, -40.5], [40, -38], [80, -35],
+  [115, -29.5], [140, -21.5], [156, -13.5], [164, -6.5],
 ];
 
 function deckShape() {
@@ -741,7 +761,7 @@ function deckShape() {
  *  gallery struts, safety nets, deck-edge fittings — and by the spray emitter
  *  so water is born OUTBOARD of the deck instead of clipping through it. */
 export function deckHalfWidth(x, side) {
-  const pts = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
+  const pts = side > 0 ? DECK_OUTLINE.slice(0, 14) : DECK_OUTLINE.slice(13);
   for (let i = 0; i < pts.length - 1; i++) {
     const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
     if ((x1 >= x && x >= x2) || (x2 >= x && x >= x1)) {
@@ -866,7 +886,7 @@ function buildDeck(mats) {
   // real outline (the old fixed stanchion row floated off the deck edge)
   const netTex = makeNetTexture();
   for (const side of [1, -1]) {
-    const pts = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
+    const pts = side > 0 ? DECK_OUTLINE.slice(0, 14) : DECK_OUTLINE.slice(13);
     for (let i = 0; i < pts.length - 1; i++) {
       const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
       const len = Math.hypot(x2 - x1, z2 - z1);
@@ -897,8 +917,8 @@ function buildDeck(mats) {
       catwalk.add(b);
     }
   };
-  mkEdge(DECK_OUTLINE.slice(0, 15));
-  mkEdge(DECK_OUTLINE.slice(15).concat([DECK_OUTLINE[0]]));
+  mkEdge(DECK_OUTLINE.slice(0, 14));
+  mkEdge(DECK_OUTLINE.slice(14).concat([DECK_OUTLINE[0]]));
   catwalk.traverse((o) => { o.castShadow = true; });
   group.add(catwalk);
 
@@ -917,7 +937,7 @@ function buildDeck(mats) {
 function buildIsland(mats) {
   const g = new THREE.Group();
   const Y0 = SHIP.deckY;
-  const CX = 48, CZ = 31;
+  const CX = 48, CZ = 25;
   const add = (geo, mat, x, y, z, ry = 0) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
@@ -1339,9 +1359,9 @@ function buildDetails(mats) {
     b.rotation.y = ry;
     g.add(b);
   };
-  ciws(146, -21, -0.3);
-  ciws(146, 21, 0.3);
-  ciws(-158, 33, Math.PI);
+  ciws(146, -17.5, -0.3);
+  ciws(146, 18, 0.3);
+  ciws(-158, 31, Math.PI);
 
   // ---- MK-29 ESSM launchers ------------------------------------------
   // Trainable pedestal under a box of eight launch tubes; the tube mouths
@@ -1374,8 +1394,8 @@ function buildDetails(mats) {
     b.rotation.y = ry;
     g.add(b);
   };
-  essm(136, -26, -0.4);
-  essm(136, 26, 0.4);
+  essm(136, -19, -0.4);
+  essm(136, 19, 0.4);
 
   // deck tractors
   const tractor = (x, z, ry) => {
@@ -1410,12 +1430,12 @@ function buildDetails(mats) {
     add(new THREE.CylinderGeometry(0.06, 0.09, h, 5), mats.greyDark,
         x, SHIP.deckY + h / 2, z).rotation.z = ry;
   };
-  for (const [x, z] of [[118, 34], [108, 34], [-80, 37], [-90, 37],
-                        [-30, -37], [60, -30], [138, 28], [-140, 35]]) {
+  for (const [x, z] of [[118, 24], [108, 24], [-80, 28], [-90, 28],
+                        [-30, -40], [60, -31], [138, 20], [-140, 29]]) {
     whip(x, z, 3.2 + Math.random() * 2.6, (Math.random() - 0.5) * 0.25);
   }
   // radome / communication domes
-  for (const [x, z, r] of [[-60, 35, 1.1], [70, -30, 0.9], [-120, 36, 1.3]]) {
+  for (const [x, z, r] of [[-60, 28, 1.1], [70, -31, 0.9], [-120, 29, 1.3]]) {
     const d = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 8), mats.white);
     d.position.set(x, SHIP.deckY + r, z);
     d.castShadow = true;
@@ -1423,7 +1443,7 @@ function buildDetails(mats) {
   }
 
   // ---- vents / ducting along the deck edge ---------------------------
-  for (const [x, z, w] of [[-10, -36, 14], [30, -35, 12], [90, -28, 10]]) {
+  for (const [x, z, w] of [[-10, -38, 14], [30, -36, 12], [90, -30, 10]]) {
     add(new THREE.BoxGeometry(w, 1.0, 1.6), mats.greyDark, x, SHIP.deckY + 0.5, z);
   }
 
@@ -1653,9 +1673,9 @@ export function buildPatches(stations = 26, ring = 14) {
 function buildBowSponson(mats) {
   const g = new THREE.Group();
   const s = new THREE.Shape();
-  s.moveTo(122, -34);
-  s.lineTo(172, -25.5);
-  s.lineTo(172, -34);
+  s.moveTo(122, -33);
+  s.lineTo(166, -25);
+  s.lineTo(166, -33);
   s.closePath();
   const geo = new THREE.ExtrudeGeometry(s, { depth: 3.0, bevelEnabled: false });
   geo.rotateX(Math.PI / 2);
@@ -1670,7 +1690,7 @@ function buildBowSponson(mats) {
  *  alone read as decals; a physical sill edge sells them as machinery. */
 function buildElevatorSills(mats) {
   const g = new THREE.Group();
-  const rects = [[0, 20, 22, 38], [-110, -90, 22, 38], [-62, -42, -38, -24]];
+  const rects = [[0, 20, 16, 30], [-110, -90, 16, 30], [-62, -42, -38, -26]];
   for (const [x1, x2, z1, z2] of rects) {
     const ins = 0.45, t = 0.34, h = 0.14;
     const cx = (x1 + x2) / 2, cz = (z1 + z2) / 2;

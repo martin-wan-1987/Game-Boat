@@ -34,6 +34,9 @@ export class DamageModel {
     this.deckAwashTime = 0; this.slamAccum = 0; this.rollAccum = 0;
     this.events.length = 0;
     this.ultraEvent = false;
+    this.underT = 0;
+    this._wallFlew = false;
+    this._wallLanded = false;
   }
 
   log(msg, t) {
@@ -63,6 +66,24 @@ export class DamageModel {
       this.flood = Math.min(1, this.flood + dt * 0.0075);
       if (this.state === 'ok') this.state = 'flooding';
     }
+
+    // ---- the mega-wall landing roll ---------------------------------
+    // She punched through the wall and was flung into the air. When a
+    // 100 000 t hull comes back down onto the sea, the hull either holds
+    // (she bobs back up — the likelier outcome, ~65%) or the structure
+    // lets go and she starts going down by the bow immediately (~35%).
+    // Either way the ultra flooding floor finishes the story slowly.
+    if (this.ultraEvent && !this._wallLanded && ship.velocity.y < -8 && this._wallFlew) {
+      this._wallLanded = true;
+      if (Math.random() < 0.35) {
+        this.flood = Math.max(this.flood, 0.62);
+        this.integrity = Math.min(this.integrity, 34);
+        this.log('着水冲击 · 船体结构崩裂，大量进水', time);
+      } else {
+        this.log('着水冲击 · 船体扛住了', time);
+      }
+    }
+    if (this.ultraEvent && ship.velocity.y > 6) this._wallFlew = true;
 
     // ---- slamming damage -----------------------------------------
     // thresholded: a 1.5 m sea must do exactly nothing
@@ -146,11 +167,28 @@ export class DamageModel {
     ship.list = this.listBias;
 
     // ---- loss condition: flight deck under water ------------------
+    // Sustained: the mega-wall buries the whole ship for seconds while she
+    // climbs/descends the face — that is surviving, not sinking. She only
+    // counts as lost once she has stayed under for six continuous seconds
+    // AND is no longer fighting her way back up.
     if (this.state !== 'lost') {
       const deckWorld = new THREE.Vector3(0, 20, 0)
         .applyQuaternion(ship.quaternion).add(ship.position);
       const sea = waveField.heightAt(deckWorld.x, deckWorld.z);
-      if (deckWorld.y < sea + 1.0) {
+      if (deckWorld.y < sea + 1.0 && ship.velocity.y < 2.0) {
+        this.underT = (this.underT || 0) + dt;
+        if (this.underT > 6) {
+          this.state = 'lost';
+          this.lostAt = time;
+          this.log('舰体沉没', time);
+        }
+      } else {
+        this.underT = 0;
+      }
+      // A hull that is essentially full of water is lost, full stop — the
+      // bobbing rule above would otherwise keep a dead ship "alive" forever
+      // whenever the sea lifts her rail clear every few seconds.
+      if (this.flood >= 0.995) {
         this.state = 'lost';
         this.lostAt = time;
         this.log('舰体沉没', time);
