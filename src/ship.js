@@ -812,6 +812,45 @@ function buildGallery(mats) {
     }
   }
 
+  // Enclosing diaphragm: continuous sloped plating from the hull's top
+  // edge out to the gallery band. Without it the overhang zone — 23 m wide
+  // under the angled deck on the port side — is open scaffolding, and a
+  // beam view sees straight through to the sea: "one side was never built".
+  {
+    const skirtMat = mats.deckSide.clone();
+    skirtMat.side = THREE.DoubleSide;
+    for (const side of [1, -1]) {
+      const outline = side > 0 ? DECK_OUTLINE.slice(0, 14) : DECK_OUTLINE.slice(13);
+      const A = [], B = [];
+      const yHull = 17.4, yBand = SHIP.deckY - 4.4;
+      for (let i = 0; i < outline.length; i++) {
+        const [x, z] = outline[i];
+        const t = THREE.MathUtils.clamp((x + HALF_L) / SHIP.length, 0, 1);
+        const { halfW } = hullSection(t, 1);
+        const dw = Math.abs(z);
+        A.push(x, yHull, side * halfW);          // on the hull's top edge
+        B.push(x, yBand, side * dw);             // under the gallery band
+      }
+      const verts = [];
+      const idx = [];
+      for (let i = 0; i < outline.length; i++) {
+        verts.push(A[i * 3], A[i * 3 + 1], A[i * 3 + 2]);
+        verts.push(B[i * 3], B[i * 3 + 1], B[i * 3 + 2]);
+      }
+      for (let i = 0; i < outline.length - 1; i++) {
+        const a0 = i * 2, b0 = i * 2 + 1, a1 = a0 + 2, b1 = b0 + 2;
+        idx.push(a0, b0, a1, b1, a1, b0);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      geo.setIndex(idx);
+      geo.computeVertexNormals();
+      const skirt = new THREE.Mesh(geo, skirtMat);
+      skirt.castShadow = true; skirt.receiveShadow = true;
+      g.add(skirt);
+    }
+  }
+
   // sponson pods along the gallery band — weapon mounts, boat davit bases
   for (const side of [1, -1]) {
     for (const x of [-128, -84, -36, 16, 66, 112]) {
