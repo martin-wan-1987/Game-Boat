@@ -176,6 +176,7 @@ class Game {
     this.shipMesh = createCarrier({ quality: this.q.shipDetail });
     this.scene.add(this.shipMesh);
     this.shipSpin = this.shipMesh.userData.spin;
+    this.shipFlag = this.shipMesh.userData.flagAnimate;
   }
 
   buildPhysics() {
@@ -436,6 +437,7 @@ class Game {
     this.shipMesh.position.copy(this.phys.position);
     this.shipMesh.quaternion.copy(this.phys.quaternion);
     if (this.shipSpin) this.shipSpin.rotation.y += dt * 0.6;
+    this.shipFlag?.(this.time);
 
     // ---- tsunami + damage ----------------------------------------
     // bow punch first: how deep the forefoot is buried in the face of the

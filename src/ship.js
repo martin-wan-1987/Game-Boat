@@ -204,6 +204,48 @@ function makeHullTexture(mirror = false) {
     g.fillStyle = '#15171a';
     g.fillRect(0, py(1.1), w, py(-1.1) - py(1.1));
 
+    // marine fouling band just below the waterline: barnacles and weed.
+    // Every real hull carries it — a clean red bottom below the boot top is
+    // the classic "model, not ship" tell.
+    {
+      const grd = g.createLinearGradient(0, py(-0.9), 0, py(-4.5));
+      grd.addColorStop(0, 'rgba(56,52,30,0.85)');
+      grd.addColorStop(0.45, 'rgba(64,70,34,0.55)');
+      grd.addColorStop(1, 'rgba(70,52,30,0.0)');
+      g.fillStyle = grd;
+      g.fillRect(0, py(-0.9), w, py(-4.5) - py(-0.9));
+      // weed tufts: short darker strokes at random spots along the band
+      for (let i = 0; i < 220; i++) {
+        const x = Math.random() * w;
+        const y = py(-1.0 + Math.random() * 1.6);
+        g.strokeStyle = `rgba(40,44,22,${0.25 + Math.random() * 0.3})`;
+        g.lineWidth = 1 + Math.random() * 2;
+        g.beginPath();
+        g.moveTo(x, y);
+        g.lineTo(x + (Math.random() - 0.5) * 4, y + 3 + Math.random() * 8);
+        g.stroke();
+      }
+    }
+
+    // rust weeping: from the hawse pipe, the draft-mark bolts and a few
+    // plate seams — thin oxide drips running DOWN from each feature
+    const rust = (x, y, n, len) => {
+      for (let i = 0; i < n; i++) {
+        const dx = x + (Math.random() - 0.5) * 26;
+        const l = len * (0.5 + Math.random());
+        g.strokeStyle = `rgba(96,58,34,${0.10 + Math.random() * 0.16})`;
+        g.lineWidth = 0.8 + Math.random() * 1.8;
+        g.beginPath();
+        g.moveTo(dx, y);
+        g.bezierCurveTo(dx + 2, y + l * 0.4, dx - 2, y + l * 0.7, dx + 1, y + l);
+        g.stroke();
+      }
+    };
+    rust(w * 0.79, py(2.6), 10, 60);       // hawse
+    rust(w * 0.052, py(1.2), 6, 40);       // fwd draft marks
+    rust(w * 0.935, py(1.2), 6, 40);       // aft draft marks
+    for (let i = 0; i < 9; i++) rust(Math.random() * w, py(2 + Math.random() * 8), 3, 34);
+
     // vertical weathering streaks running down from the deck edge
     for (let i = 0; i < 900; i++) {
       const x = Math.random() * w;
@@ -536,44 +578,51 @@ function shipMaterials() {
   const steelNrm = makeNormalTexture(256, 1.4, 20, 4);
   steelNrm.repeat.set(4, 4);
 
-  const std = (o) => new THREE.MeshStandardMaterial(o);
+  const std = (o) => {
+    const m = new THREE.MeshStandardMaterial(o);
+    // Haze Grey warship paint is a SEMI-GLOSS: flat-lit plastic was a big
+    // part of the "fake" look. envMapIntensity picks up the sky so hull
+    // sides and panel faces carry moving reflections at grazing angles.
+    m.envMapIntensity = o.envInt ?? 1.0;
+    return m;
+  };
 
   return {
     hull: std({
       map: hullTex, normalMap: hullNrm, normalScale: new THREE.Vector2(0.55, 0.55),
-      color: 0xffffff, roughness: 0.82, metalness: 0.26,
+      color: 0xffffff, roughness: 0.60, metalness: 0.32, envInt: 1.25,
       side: THREE.DoubleSide,
     }),
     hullPort: std({
       map: hullTexPort, normalMap: hullNrm, normalScale: new THREE.Vector2(0.55, 0.55),
-      color: 0xffffff, roughness: 0.82, metalness: 0.26,
+      color: 0xffffff, roughness: 0.60, metalness: 0.32, envInt: 1.25,
       side: THREE.DoubleSide,
     }),
     deckTop: std({
       map: deckTex, normalMap: deckNrm, normalScale: new THREE.Vector2(0.75, 0.75),
-      color: 0xffffff, roughness: 0.90, metalness: 0.16,
+      color: 0xffffff, roughness: 0.90, metalness: 0.14, envInt: 0.45,
     }),
     deckSide: std({
       normalMap: steelNrm, normalScale: new THREE.Vector2(0.4, 0.4),
-      color: 0x6f767d, roughness: 0.76, metalness: 0.33,
+      color: 0x6f767d, roughness: 0.58, metalness: 0.34, envInt: 1.0,
     }),
     island: std({
       map: islandTex, normalMap: islandNrm, normalScale: new THREE.Vector2(0.5, 0.5),
-      color: 0xffffff, roughness: 0.74, metalness: 0.30,
+      color: 0xffffff, roughness: 0.60, metalness: 0.30, envInt: 1.15,
     }),
     grey: std({
       normalMap: steelNrm, normalScale: new THREE.Vector2(0.35, 0.35),
-      color: 0x7d848b, roughness: 0.70, metalness: 0.36,
+      color: 0x7d848b, roughness: 0.56, metalness: 0.38, envInt: 1.05,
     }),
     greyDark: std({
       normalMap: steelNrm, normalScale: new THREE.Vector2(0.35, 0.35),
-      color: 0x4a5057, roughness: 0.66, metalness: 0.42,
+      color: 0x4a5057, roughness: 0.52, metalness: 0.44, envInt: 1.05,
     }),
-    black: std({ color: 0x1c1f22, roughness: 0.55, metalness: 0.4 }),
-    white: std({ color: 0xd9dde0, roughness: 0.5, metalness: 0.1 }),
+    black: std({ color: 0x1c1f22, roughness: 0.48, metalness: 0.4, envInt: 0.9 }),
+    white: std({ color: 0xd9dde0, roughness: 0.44, metalness: 0.1, envInt: 1.1 }),
     glass: std({
       color: 0x1a2a38, roughness: 0.08, metalness: 0.9,
-      transparent: true, opacity: 0.55,
+      transparent: true, opacity: 0.55, envInt: 1.6,
     }),
     jet: std({ color: 0x8a949c, roughness: 0.52, metalness: 0.42 }),
     jetDark: std({ color: 0x555c64, roughness: 0.55, metalness: 0.45 }),
@@ -583,7 +632,7 @@ function shipMaterials() {
     }),
     yellow: std({ color: 0xd9a800, roughness: 0.6, metalness: 0.25 }),
     orange: std({ color: 0xe2661a, roughness: 0.75, metalness: 0.05 }),
-    steel: std({ color: 0x555b61, roughness: 0.45, metalness: 0.7 }),
+    steel: std({ color: 0x555b61, roughness: 0.42, metalness: 0.72, envInt: 1.2 }),
     bronze: std({ color: 0x8a6a3a, roughness: 0.4, metalness: 0.8 }),
   };
 }
@@ -935,6 +984,26 @@ function buildIsland(mats) {
   for (const wx of [-0.6, 0.6]) {
     add(new THREE.CylinderGeometry(0.05, 0.08, 6, 5), mats.greyDark,
       CX + wx, Y0 + 37, CZ, wx * 0.06);
+  }
+  // guy-wire stays from the masthead down to the roof — a stayed mast is
+  // structural honesty you can see
+  {
+    const top = new THREE.Vector3(CX, Y0 + 33.6, CZ);
+    const anchor = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    const dir = new THREE.Vector3();
+    const stay = (ax, ay, az) => {
+      anchor.set(ax, ay, az);
+      dir.copy(anchor).sub(top);
+      const L = dir.length();
+      const s = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, L, 5), mats.greyDark);
+      s.position.copy(top).addScaledVector(dir, 0.5);
+      s.quaternion.setFromUnitVectors(up, dir.normalize());
+      g.add(s);
+    };
+    stay(CX - 8, Y0 + 21.2, CZ - 4);
+    stay(CX + 8, Y0 + 21.2, CZ - 4);
+    stay(CX, Y0 + 21.2, CZ + 4.4);
   }
 
   // rotating EASR panel (the only moving part — kept out of the static bake)
@@ -1514,6 +1583,114 @@ export function buildPatches(stations = 26, ring = 14) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Bow catapult sponson + stern ensign + elevator sills
+ * ------------------------------------------------------------------ */
+
+/** The port-bow catapult sponson — the wedge "chin" hanging under the port
+ *  forward flight deck. Every supercarrier has one; without it the bow
+ *  reads as a plain wedge. */
+function buildBowSponson(mats) {
+  const g = new THREE.Group();
+  const s = new THREE.Shape();
+  s.moveTo(122, -34);
+  s.lineTo(172, -25.5);
+  s.lineTo(172, -34);
+  s.closePath();
+  const geo = new THREE.ExtrudeGeometry(s, { depth: 3.0, bevelEnabled: false });
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, SHIP.deckY - 0.4, 0);
+  const m = new THREE.Mesh(geo, mats.deckSide);
+  m.castShadow = true; m.receiveShadow = true;
+  g.add(m);
+  return g;
+}
+
+/** Raised sill frames around the deck elevators — the painted rectangles
+ *  alone read as decals; a physical sill edge sells them as machinery. */
+function buildElevatorSills(mats) {
+  const g = new THREE.Group();
+  const rects = [[0, 20, 22, 38], [-110, -90, 22, 38], [-62, -42, -38, -24]];
+  for (const [x1, x2, z1, z2] of rects) {
+    const ins = 0.45, t = 0.34, h = 0.14;
+    const cx = (x1 + x2) / 2, cz = (z1 + z2) / 2;
+    const lx = (x2 - x1) - ins * 2, lz = (z2 - z1) - ins * 2;
+    for (const zz of [cz + lz / 2, cz - lz / 2]) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(lx, h, t), mats.greyDark);
+      m.position.set(cx, SHIP.deckY + h / 2, zz);
+      m.castShadow = true;
+      g.add(m);
+    }
+    for (const xx of [cx - lx / 2, cx + lx / 2]) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(t, h, lz), mats.greyDark);
+      m.position.set(xx, SHIP.deckY + h / 2, cz);
+      m.castShadow = true;
+      g.add(m);
+    }
+  }
+  return g;
+}
+
+/** The ensign at the stern gaff, flying aft. The cloth is a plane whose
+ *  vertices ride two travelling sine harmonics with amplitude growing from
+ *  the hoist (fixed edge) to the fly (free edge) — a cheap, honest flag.
+ *  `group.userData.animate(t)` advances it. */
+function buildEnsign() {
+  const g = new THREE.Group();
+  const W = 5.2, H = 3.2;
+  const tex = canvasTex(256, 160, (c, w, h) => {
+    const stripes = 13;
+    for (let i = 0; i < stripes; i++) {
+      c.fillStyle = i % 2 ? '#f2f4f6' : '#b6282e';
+      c.fillRect(0, (i / stripes) * h, w, h / stripes + 1);
+    }
+    c.fillStyle = '#22356e';
+    c.fillRect(0, 0, w * 0.42, h * 0.54);
+    c.fillStyle = '#f2f4f6';
+    for (let r = 0; r < 4; r++) for (let cc = 0; cc < 5; cc++) {
+      c.beginPath();
+      c.arc(8 + cc * (w * 0.42 - 14) / 4, 10 + r * (h * 0.54 - 18) / 3, 3.2, 0, 7);
+      c.fill();
+    }
+  });
+  const mat = new THREE.MeshStandardMaterial({
+    map: tex, side: THREE.DoubleSide, roughness: 0.85, metalness: 0.0,
+  });
+  const geo = new THREE.PlaneGeometry(W, H, 22, 6);
+  geo.translate(W / 2, 0, 0);            // hoist edge at local x = 0
+  const flag = new THREE.Mesh(geo, mat);
+  flag.castShadow = false;
+  flag.userData.dynamic = true;          // animated; keep out of the bake
+  const base = geo.attributes.position.array.slice();
+  flag.userData.animate = (t) => {
+    const pos = geo.attributes.position;
+    const arr = pos.array;
+    for (let i = 0; i < pos.count; i++) {
+      const x = base[i * 3], y = base[i * 3 + 1];
+      const e = x / W;                   // 0 at the hoist, 1 at the fly
+      arr[i * 3 + 2] = base[i * 3 + 2]
+        + Math.sin(x * 1.9 - t * 8.5) * 0.42 * e
+        + Math.sin(x * 3.7 - t * 13.0) * 0.16 * e;
+      arr[i * 3 + 1] = y - e * e * 0.35  // the fly droops a touch
+        + Math.sin(x * 2.6 - t * 6.0) * 0.10 * e;
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+  };
+  // gaff staff on the transom, flag flying aft
+  const staff = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09, 0.12, 15, 8),
+    new THREE.MeshStandardMaterial({ color: 0xb8bec4, roughness: 0.5, metalness: 0.4 }));
+  staff.position.set(-167, SHIP.deckY + 7.5, 0);
+  staff.castShadow = true;
+  g.add(staff);
+  flag.position.set(-167, SHIP.deckY + 13.6, 0);
+  flag.rotation.y = Math.PI / 2;         // plane spans aft
+  g.add(flag);
+  g.userData.animate = (t) => flag.userData.animate(t);
+  return g;
+}
+
+/* ------------------------------------------------------------------ *
  * Static-geometry baking
  *
  * The model is authored as hundreds of small primitive meshes because that
@@ -1603,6 +1780,10 @@ export function createCarrier({ quality = 'high' } = {}) {
   group.add(island);
   group.add(buildDetails(mats));
   group.add(buildHullDetails(mats));
+  group.add(buildBowSponson(mats));
+  group.add(buildElevatorSills(mats));
+  const ensign = buildEnsign();
+  group.add(ensign);
 
   // ---- air wing: REMOVED by request — the ship is modelled as
   // infrastructure only (parked-aircraft outlines remain painted on the
@@ -1621,6 +1802,7 @@ export function createCarrier({ quality = 'high' } = {}) {
     ),
     spin: island.userData.spin,
     hull,
+    flagAnimate: ensign.userData.animate,
   };
 
   group.traverse((o) => {
