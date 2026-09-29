@@ -433,15 +433,18 @@ export class SprayEmitter {
     this.p = particles;
     this.acc = 0;
     this.impactAcc = 0;
+    this.punchAcc = 0;
   }
 
   /**
    * @param {number} seaState  0..1 how rough it is (tsunami active -> ~1)
    * @param {number} vertVel   ship vertical velocity (m/s); big negative =
    *                           she just came down hard off a crest
+   * @param {number} bowPunch  0..1 how deep the forefoot is buried in the
+   *                           face of the oncoming wave (deck-at-water)
    */
-  update(dt, shipObj, speed, slam, field, seaState = 0, vertVel = 0) {
-    const rate = speed * 9 + slam * 320 + seaState * 55;
+  update(dt, shipObj, speed, slam, field, seaState = 0, vertVel = 0, bowPunch = 0) {
+    const rate = speed * 13 + slam * 320 + seaState * 55;
     if (rate < 1) return;
     this.acc += rate * dt;
     const n = Math.min(60, Math.floor(this.acc));
@@ -486,6 +489,51 @@ export class SprayEmitter {
         3 + Math.random() * 8 + slam * 16 + seaState * 9,
         0,
       );
+    }
+
+    // ---- bow-punch curtain --------------------------------------------
+    // bowPunch > 0 means the forefoot is IN the face of a wave: the deck at
+    // the stem sits at or below the oncoming water. That deserves a wall of
+    // white water thrown high and wide off the bow, PLUS sheet flow tearing
+    // aft ACROSS the deck — from the bridge, this pair is exactly what
+    // "crashing through a wave" looks like from inside.
+    if (bowPunch > 0.06) {
+      this.punchAcc += bowPunch * 300 * dt;
+      const m = Math.min(70, Math.floor(this.punchAcc));
+      this.punchAcc -= m;
+      for (let i = 0; i < m; i++) {
+        if (Math.random() < 0.62) {
+          // curtain: launched off the stem, thrown up and outboard
+          const side = Math.random() < 0.5 ? 1 : -1;
+          const along = 130 + Math.random() * 40;
+          const dw = deckHalfWidth(along, side);
+          const local = new THREE.Vector3(
+            along, 19 + Math.random() * 3,
+            side * (dw * (0.9 + Math.random() * 0.2)));
+          local.applyQuaternion(q).add(shipObj.position);
+          const up = 8 + Math.random() * 14 + bowPunch * 14;
+          const out = 6 + Math.random() * 14;
+          this.p.spawn(
+            local.x, local.y, local.z,
+            fwd.x * speed * 0.25 + stbd.x * out * side + (Math.random() - 0.5) * 6,
+            up,
+            fwd.z * speed * 0.25 + stbd.z * out * side + (Math.random() - 0.5) * 6,
+            1.8 + Math.random() * 2.6, 6 + Math.random() * 12 + bowPunch * 10, 0);
+        } else {
+          // sheet flow: water already on the deck, torn aft across it
+          const local = new THREE.Vector3(
+            60 + Math.random() * 105, 21.2 + Math.random() * 2.2,
+            (Math.random() - 0.5) * 56);
+          local.applyQuaternion(q).add(shipObj.position);
+          const back = -(6 + Math.random() * 10 + speed * 0.3);
+          this.p.spawn(
+            local.x, local.y, local.z,
+            fwd.x * back + (Math.random() - 0.5) * 4,
+            1.5 + Math.random() * 5,
+            fwd.z * back + (Math.random() - 0.5) * 4,
+            1.4 + Math.random() * 1.8, 5 + Math.random() * 9, 0);
+        }
+      }
     }
 
     // ---- impact plume ------------------------------------------------

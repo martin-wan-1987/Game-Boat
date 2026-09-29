@@ -166,7 +166,9 @@ export class Hud {
       const ab = Math.abs(bearing);
       const side = bearing < 0 ? '左' : '右';
       const where = ab < 12 ? '正前方' : ab < 35 ? `${side}前方` : ab < 70 ? `${side}舷侧` : '正横';
-      const lvl = ab > 55 ? 3 : ab > 28 ? 2 : tier.id === 'large' ? 2 : tier.id === 'medium' ? 1 : 0;
+      const lvl = tier.id === 'ultra' ? 3
+        : ab > 55 ? 3 : ab > 28 ? 2 : tier.id === 'large' ? 2
+        : tier.id === 'medium' ? 1 : 0;
       this.setAlert(
         `${tier.label} · ${tsunami.height.toFixed(1)} m`,
         d > 0

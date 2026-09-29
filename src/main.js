@@ -281,6 +281,7 @@ class Game {
     this.phys.anchorChain = 0;
     this.damage.reset();
     this.tsunami.state = 'idle';
+    this.tsunami.followups = 0;
     this.tsunami.peakRoll = 0;
     this.tsunami.peakPitch = 0;
     this.field.tsunami.length = 0;
@@ -317,7 +318,7 @@ class Game {
       heading: this.phys.heading,
     }, this.time);
     this.hud.pushLog(`探测到${tier.label} · 浪高 ${this.tsunami.height.toFixed(1)} m`, this.time);
-    this.audio.alarm(tierId === 'large' ? 2 : 1);
+    this.audio.alarm(tierId === 'large' || tierId === 'ultra' ? 2 : 1);
     this.alertFired = true;
   }
 
@@ -449,6 +450,20 @@ class Game {
     }
 
     // ---- tsunami + damage ----------------------------------------
+    // bow punch first: how deep the forefoot is buried in the face of the
+    // wave in front of it (deck-at-waterline = 1). Drives the wall of white
+    // water off the stem, the sheet flow across the deck, the droplets that
+    // hit the bridge glass and the shudder through the hull — the whole
+    // "crashing through a wave" experience.
+    if (!this._bowLocal) {
+      this._bowLocal = new THREE.Vector3(150, 20, 0);
+      this._bowWorld = new THREE.Vector3();
+    }
+    this._bowWorld.copy(this._bowLocal)
+      .applyQuaternion(this.phys.quaternion).add(this.phys.position);
+    const bowPunch = THREE.MathUtils.clamp(
+      (this.field.heightAt(this._bowWorld.x, this._bowWorld.z) - this._bowWorld.y) / 3, 0, 1);
+
     const before = this.tsunami.state;
     this.tsunami.update(dt, this.time, this.phys, this.phys);
     if (before !== this.tsunami.state) {
@@ -461,7 +476,14 @@ class Game {
     }
 
     this.damage.update(dt, this.phys, this.field, this.particles, this.time);
-    this.damage.emitGreenWater(dt, this.phys, this.field, this.particles, this.time, this.phys.slam);
+    // the ultra event: while the 30 m wave group is passing her, flooding
+    // advances no matter what (see DamageModel.update). Latched — the escort
+    // large waves replace the tier but must not lift the sentence.
+    if (this.tsunami.tier?.id === 'ultra' && this.tsunami.active) {
+      this.damage.ultraEvent = true;
+    }
+    this.damage.emitGreenWater(dt, this.phys, this.field, this.particles, this.time,
+      Math.max(this.phys.slam, bowPunch * 0.8));
     for (const e of this.damage.events) {
       if (!e._logged) { e._logged = true; this.hud.pushLog(e.msg, e.t); }
     }
@@ -482,7 +504,10 @@ class Game {
     this.rain.update(dt, this.camera.position, this.storm);
     // the cockpit glass only exists in the first-person bridge view
     this.cockpit.show(this.rig.mode === 'bridge');
-    this.cockpit.update(dt, this.storm, this.time);
+    // glass wetness = storm rain PLUS spray thrown against the windows as
+    // she punches through wave faces — even on an otherwise calm day you
+    // see the bow wave hit the glass
+    this.cockpit.update(dt, Math.min(1, this.storm + bowPunch * 0.85), this.time);
 
     // ---- fx -------------------------------------------------------
     const speed = this.phys.velocity.length();
@@ -490,12 +515,20 @@ class Game {
     // Drives spray volume and the size of the plumes off the bow.
     const seaState = this.field.tsuActive
       ? THREE.MathUtils.clamp(this.field.tsuHeight / 10, 0.35, 1) : 0;
+
     this.hullFoam.update(this.time, this.field, this.shipMesh, speed, this.phys.slam);
     this.wake.update(this.time, dt, this.field, this.shipMesh, speed);
     this.propWash.update(this.time, dt, this.field, this.shipMesh, this.phys.throttle);
     this.spray.update(dt, this.shipMesh, speed, this.phys.slam, this.field,
-      seaState, this.phys.velocity.y);
+      seaState, this.phys.velocity.y, bowPunch);
     this.particles.update(dt, 0.6);
+
+    // punching into a wave face: shudder + thud, once per plunge
+    if (bowPunch > 0.45 && this.time - (this._lastPunch || 0) > 0.9) {
+      this._lastPunch = this.time;
+      this.audio.hit(Math.min(1, 0.3 + bowPunch * 0.6));
+      this.rig.addShake(0.25 + bowPunch * 0.4);
+    }
 
     // ---- camera / hud ---------------------------------------------
     this.rig.update(dt, this.shipMesh, this.field, this.tsunami.dir, speed);

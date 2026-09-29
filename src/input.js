@@ -50,6 +50,7 @@ export class Input {
       if (k === '1') this.hooks.onTsunami?.('small');
       if (k === '2') this.hooks.onTsunami?.('medium');
       if (k === '3') this.hooks.onTsunami?.('large');
+      if (k === '4') this.hooks.onTsunami?.('ultra');
       if (k === 'c') this.hooks.onCamera?.();
       if (k === 'r') this.hooks.onReset?.();
       if (k === 'h') this.hooks.onHelp?.();

@@ -183,8 +183,12 @@ export class ShipPhysics {
     const tmpF = this._tmpF;
 
     // flooding adds real weight; added mass only changes how fast the hull
-    // responds to a force, it is not weight.
-    const trueMass = this.mass * (1 + this.flood * 0.55);
+    // responds to a force, it is not weight. The flood² term is what makes a
+    // fully-flooded hull actually go under: a linear ×0.55 only deepens the
+    // draft to ~19 m — the 20 m flight deck stays dry and she floats
+    // half-full forever. Quadratic growth passes neutral buoyancy near
+    // flood = 1, which is physically what "full of water" means.
+    const trueMass = this.mass * (1 + this.flood * 0.55 + this.flood * this.flood * 1.3);
     const massEff = trueMass * (1 + this.addedMassLin);
 
     // ---- gravity -------------------------------------------------

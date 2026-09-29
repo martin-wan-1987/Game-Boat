@@ -35,6 +35,17 @@ export const TSUNAMI_TIERS = {
     period: 12.0, distance: 850, crests: 7,
     warn: '危险！可能横摇失稳甚至倾覆',
   },
+  // The end-of-the-world event. A sustained wave GROUP — every follower is
+  // itself a large tsunami — plus two more large events auto-fired behind it.
+  // The ship WILL sink; the damage model floors the flooding rate while the
+  // event runs so she goes down slowly, watchably, over about a minute.
+  ultra: {
+    id: 'ultra', label: '超巨型海啸', hMin: 28, hMax: 32,
+    period: 14.0, distance: 950, crests: 8,
+    profile: [1.00, 0.92, 0.80, 0.88, 0.74, 0.78, 0.66, 0.62],
+    followups: 2,
+    warn: '灭顶之灾 · 她挺不过这一场',
+  },
 };
 
 export class TsunamiManager {
@@ -94,11 +105,16 @@ export class TsunamiManager {
       period: tier.period * (0.92 + Math.random() * 0.18),
       distance: tier.distance,
       crests: tier.crests,
+      profile: tier.profile || null,   // ultra: sustained group, no decay
     });
     this.field.tsuLife = 0;
+    // the ultra event brings its own escort: this many follow-up large
+    // events fire automatically as each wave group clears
+    this.followups = tier.followups || 0;
 
     this.state = 'inbound';
     this.tStart = time;
+    this.lastTriggerT = time;
     this.peakRoll = 0; this.peakPitch = 0; this.worstUp = 1;
     this.rollHistory.length = 0;
     return tier;
@@ -124,6 +140,18 @@ export class TsunamiManager {
     if (this.state === 'inbound') {
       if (dist < 0) this.state = 'active';
     } else if (this.state === 'active') {
+      // escort waves fire WHILE the event is live — waiting for the whole
+      // multi-km group to clear meant they arrived after she had already
+      // gone down. Each replaces the remaining tail with a fresh large
+      // wave train a fresh arrival angle.
+      if (this.followups > 0 && dist < -300 && time - this.lastTriggerT > 30 && ship) {
+        this.followups--;
+        const pending = this.followups;   // trigger() would reset it to 0
+        this.trigger('large', { position: ship.position, heading: ship.heading }, time);
+        this.followups = pending;
+        this.msg = '接续巨浪袭来';
+        return;
+      }
       // the train has run past once the front is a long way astern
       const span = this.field.tsuWidth * 2 + 700;
       if (dist < -span) {

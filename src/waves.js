@@ -193,15 +193,20 @@ export class WaveField {
 
     // ---- wave-group height profile -------------------------------------
     // A tsunami is not one wave: it is a *group*. The leading crest is the
-    // wall the player sees coming; behind it follow a secondary crest, then a
-    // scatter of medium and small waves. `profile` shapes that group so the
+    // wall the player sees coming; behind it follow a secondary crest, then
+    // a scatter of medium and small waves. `profile` shapes that group so the
     // encounter reads as "several waves hitting together" rather than a single
     // swell. Entries after the first are jittered so no two events match.
-    const profile = [1.00, 0.88, 0.54, 0.74, 0.42, 0.52, 0.30, 0.22];
+    // A caller-supplied profile (the ultra tier) is used as-is, WITHOUT the
+    // geometric decay — that is exactly what makes it a train of large
+    // tsunamis instead of one big wave followed by ripples.
+    const profile = o.profile || [1.00, 0.88, 0.54, 0.74, 0.42, 0.52, 0.30, 0.22];
     const a0 = 0.45 * o.height;
     let sOff = 0;
     for (let i = 0; i < crests; i++) {
-      const rel = profile[i % profile.length] * Math.pow(0.93, i);
+      const rel = o.profile
+        ? profile[i % profile.length]
+        : profile[i % profile.length] * Math.pow(0.93, i);
       const jitter = rand(0.86, 1.14);                   // <- the randomness
       const Li = L0 * rand(0.88, 1.14);
       const ang = Math.atan2(dz, dx) + rand(-spread, spread);

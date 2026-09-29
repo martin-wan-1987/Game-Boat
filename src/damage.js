@@ -33,6 +33,7 @@ export class DamageModel {
     this.fires.length = 0; this.state = 'ok';
     this.deckAwashTime = 0; this.slamAccum = 0; this.rollAccum = 0;
     this.events.length = 0;
+    this.ultraEvent = false;
   }
 
   log(msg, t) {
@@ -51,6 +52,17 @@ export class DamageModel {
     const att = ship.attitude;
     const rollDeg = Math.abs(att.roll) * 57.2958;
     const pitchDeg = Math.abs(att.pitch) * 57.2958;
+
+    // ---- the ultra event: she is going down -------------------------
+    // While the 30 m wave group is passing, flooding advances no matter how
+    // she rides it. This is the "guaranteed, but slow" sink: ~0.0075/s of
+    // irreducible flooding puts her under over roughly two minutes — long
+    // enough to walk the camera rigs around a dying ship. Normal mechanisms
+    // still stack on top.
+    if (this.ultraEvent && this.state !== 'lost') {
+      this.flood = Math.min(1, this.flood + dt * 0.0075);
+      if (this.state === 'ok') this.state = 'flooding';
+    }
 
     // ---- slamming damage -----------------------------------------
     // thresholded: a 1.5 m sea must do exactly nothing
@@ -103,8 +115,12 @@ export class DamageModel {
       }
     } else {
       this.deckAwashTime = Math.max(0, this.deckAwashTime - dt * 0.35);
-      // some of it drains back out
-      this.flood = Math.max(0, this.flood - dt * 0.010);
+      // some of it drains back out — but never against the ultra event,
+      // whose floor must actually accumulate (it was being cancelled to a
+      // net +0.001/s here, and she would never sink)
+      if (!this.ultraEvent) {
+        this.flood = Math.max(0, this.flood - dt * 0.010);
+      }
     }
 
     // ---- capsize ---------------------------------------------------
