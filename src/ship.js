@@ -579,11 +579,16 @@ function shipMaterials() {
   steelNrm.repeat.set(4, 4);
 
   const std = (o) => {
-    const m = new THREE.MeshStandardMaterial(o);
     // Haze Grey warship paint is a SEMI-GLOSS: flat-lit plastic was a big
     // part of the "fake" look. envMapIntensity picks up the sky so hull
     // sides and panel faces carry moving reflections at grazing angles.
-    m.envMapIntensity = o.envInt ?? 1.0;
+    // (Set AFTER construction: three's Material.set ignores unknown
+    // constructor keys like envInt, so the first version silently did
+    // nothing and every warning spam said so.)
+    const envInt = o.envInt ?? 1.0;
+    delete o.envInt;
+    const m = new THREE.MeshStandardMaterial(o);
+    m.envMapIntensity = envInt;
     return m;
   };
 

@@ -126,6 +126,34 @@ class Game {
     });
     try { this.renderer.compile(this.scene, this.camera); } catch (e) { /* non-fatal */ }
 
+    // Shader-variant warm-up. The first tsunami summon compiled ~3 new
+    // programs SYNCHRONOUSLY — a several-hundred-ms main-thread stall on
+    // real GPUs, which the compositor presents as a full-screen black
+    // flash. Render one frame each of the tsunami / elevation-wall / full
+    // storm states back here behind the loading screen, then restore calm,
+    // so no state a wave can put the scene in ever compiles mid-game.
+    try {
+      this.field.spawnTsunami({ x: 0, z: 0, dirX: 1, dirZ: 0, height: 12,
+        distance: 4000, crests: 2, speed: 40 });
+      this.skySys.setStorm(1);
+      // rain too: it is INVISIBLE in calm weather, and compile() skips
+      // invisible objects — its material otherwise compiles the moment a
+      // storm first switches it on
+      this.rain.mesh.visible = true;
+      this.rain.mat.opacity = 0.4;
+      this.ocean.update(0, this.phys.position, this.field);
+      this.renderer.render(this.scene, this.camera);
+      this.field.tsuElevation = true;              // the mega-wall variant
+      this.ocean.update(0, this.phys.position, this.field);
+      this.renderer.render(this.scene, this.camera);
+      this.field.tsunami.length = 0;
+      this.field.tsuActive = false;
+      this.field.tsuElevation = false;
+      this.rain.mesh.visible = false;
+      this.rain.mat.opacity = 0;
+      this.skySys.setStorm(0);
+    } catch (e) { /* non-fatal */ }
+
     this.loop();
   }
 
