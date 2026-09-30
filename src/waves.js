@@ -560,7 +560,13 @@ WaveSample sampleWaves(vec2 p) {
 
   WaveSample o;
   o.pos = pos;
-  o.nrm = normalize(cross(vec3(tzx, tzy, tzz), vec3(txx, txy, txz)));
+  // A folding Gerstner surface (Q > 1, which the mega wall deliberately is)
+  // has parallel tangents at the fold: cross() is ~zero and normalize()
+  // yields NaN, which rasterises as flashing black patches on the wave
+  // face. Fall back to straight-up there — the fold is foam anyway.
+  vec3 n = cross(vec3(tzx, tzy, tzz), vec3(txx, txy, txz));
+  float nl2 = dot(n, n);
+  o.nrm = nl2 > 1e-10 ? n * inversesqrt(nl2) : vec3(0.0, 1.0, 0.0);
   o.vel = vel;
   o.jac = txx * tzz - txz * tzx;
   return o;

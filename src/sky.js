@@ -40,8 +40,10 @@ export class SkySystem {
     const d = 420;
     s.camera.left = -d; s.camera.right = d;
     s.camera.top = d;   s.camera.bottom = -d;
-    s.bias = -0.0006;
-    s.normalBias = 0.9;
+    // shadow-acne tuning for a mostly-flat megadeck at grazing sun:
+    // under-biased shadows shimmer as square texel patches on the deck
+    s.bias = -0.00035;
+    s.normalBias = 1.4;
     scene.add(this.sunLight);
     scene.add(this.sunLight.target);
 
