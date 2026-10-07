@@ -75,6 +75,16 @@ cat ~/.ssh/id_ed25519.pub   # 粘贴到 GitHub → Settings → SSH keys
 - **改动物理 / 相机 / 海面 / 烘焙相关代码前，先读 [HANDOFF.md](HANDOFF.md) 的「必须保持的不变量」一节**——那里记录了零黑屏、海面网格跟随舰船、静态烘焙等硬性约束，违反会直接退化画质或复现黑屏 bug
 - 大改动开分支（`feature/xxx`），跑过下方 QA 探针再并回 main
 
+### 强制技能 mobile-game-ui-audit（Codex 必读）
+
+全局 `~/.codex/AGENTS.md` 规定：手机游戏的实现前预检与交付验收必须使用 `$mobile-game-ui-audit` 技能，它是唯一验收标准。该技能已**内置在本仓库** `.codex/skills/mobile-game-ui-audit/`，新机器首次搭建时复制一次：
+
+```bash
+mkdir -p ~/.codex/skills && cp -R .codex/skills/mobile-game-ui-audit ~/.codex/skills/
+```
+
+若技能缺失，Codex 会按规则把游戏类任务标记为受阻（blocked）并拒绝声称"适配完成"——这是预期行为，不是 bug；执行上面的复制命令即可解锁。
+
 ---
 
 ## 操作说明（与游戏内 H 键帮助一致）

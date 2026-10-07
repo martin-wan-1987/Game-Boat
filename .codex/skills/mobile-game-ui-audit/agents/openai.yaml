@@ -1,0 +1,6 @@
+interface:
+  display_name: "手机游戏界面审核"
+  short_description: "每次生成游戏必做的手机适配、安全区域、按钮间距与触控验证"
+  default_prompt: "使用 $mobile-game-ui-audit 在生成游戏前审查手机布局，并在交付前验证安全区域、按钮与关键信息，记录证据和未验证范围。"
+policy:
+  allow_implicit_invocation: true
