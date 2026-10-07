@@ -1,133 +1,134 @@
-/**
- * input.js — keyboard, mouse and the draggable engine-order telegraph.
- *
- * Keys
- *   W / S        ahead / astern (nudges the engine order)
- *   A / D        rudder port / starboard
- *   Shift / Ctrl full ahead / full astern detent
- *   Space        drop / weigh anchor
- *   X            stop engines
- *   1 2 3        small / medium / large tsunami
- *   C            cycle camera
- *   1..5 also work as camera when the tsunami panel is closed
- *   R            reset the scenario
- *   H            help overlay
- *   P / Esc      pause
- */
+/** Keyboard and Pointer inputs share one press-source map and viewport boundary. */
+import { TSUNAMI_TIERS } from './tsunami.js';
+import { viewport } from './viewport.js';
 
 export class Input {
   constructor(domElement, hooks = {}) {
     this.dom = domElement;
     this.hooks = hooks;
-    this.keys = new Set();
-    this.throttle = 0;          // -0.35 .. 1
-    this.rudder = 0;            // -1 .. 1
+    this.presses = new Map();
+    this.contacts = new Map();
+    this.throttle = 0;
+    this.rudder = 0;
     this.rudderTarget = 0;
-    this.mouse = { x: 0, y: 0, down: false, button: 0 };
     this.enabled = true;
-    this.walkMode = false;     // in walk mode WASD steers the walker, not the ship
+    this._walkMode = false;
+    this.hud = document.getElementById('hud');
+    this._events = new AbortController();
+    this.dom.style.touchAction='none';
     this._bind();
   }
-
+  get keys(){return new Set(this.presses.values());}
+  get walkMode(){return this._walkMode;}
+  set walkMode(value){
+    if(value===this._walkMode)return;
+    this.release();this._walkMode=value;
+    this.hud.dataset.walking=String(value);
+    document.querySelector('.touch-note').textContent=value?'方向键行走 · 拖动画面转头':'按住方向转舵 · 拖动画面观察';
+  }
+  get interactive(){return this.enabled&&this.hud.classList.contains('on')&&!document.querySelector('#help.on,#pause.on');}
+  listen(target,type,callback,options={}){target.addEventListener(type,callback,{...options,signal:this._events.signal});}
+  release(){
+    this.presses.clear();this.contacts.clear();this.rudderTarget=0;this.rudder=0;
+    document.querySelectorAll('[data-hold-key].pressed').forEach(el=>el.classList.remove('pressed'));
+  }
   _bind() {
-    const dom = this.dom;
-
-    this._kd = (e) => {
-      if (!this.enabled) return;
-      if (e.repeat) { e.preventDefault(); return; }
-      const k = e.key.toLowerCase();
-      this.keys.add(k);
-
-      // walking: movement keys belong to the walker; swallow them here so
-      // they never touch the engine order or the helm. E toggles run mode.
-      if (this.walkMode && ['w', 'a', 's', 'd', 'e'].includes(k)) {
-        if (k === 'e') this.hooks.onToggleRun?.();
-        e.preventDefault();
-        return;
+    this.listen(window,'keydown',e=>{
+      const k=e.key.toLowerCase();
+      if(e.defaultPrevented||([' ','enter'].includes(k)&&e.target.closest?.('button,[role=button]')))return;
+      if(!this.enabled||!this.hud.classList.contains('on'))return;
+      if(e.repeat){e.preventDefault();return;}
+      if(['p','escape','h'].includes(k)){
+        this.release();
+        if(k==='h')this.hooks.onHelp?.();else this.hooks.onPause?.();
+        e.preventDefault();return;
       }
-
-      if (k === 'w') this.nudgeThrottle(0.05);
-      if (k === 's') this.nudgeThrottle(-0.05);
-      if (k === 'x') { this.throttle = 0; this.hooks.onThrottle?.(this.throttle); }
-      if (e.shiftKey && k === 'shift') { this.throttle = 1; this.hooks.onThrottle?.(this.throttle); }
-      if (e.ctrlKey && k === 'control') { this.throttle = -0.35; this.hooks.onThrottle?.(this.throttle); }
-
-      if (k === ' ') {
-        e.preventDefault();
-        this.hooks.onAnchor?.();
+      if(!this.interactive)return;
+      this.presses.set(`key:${k}`,k);
+      if(this.walkMode&&['w','a','s','d','e'].includes(k)){
+        if(k==='e')this.hooks.onToggleRun?.();e.preventDefault();return;
       }
-      if (k === '1') this.hooks.onTsunami?.('small');
-      if (k === '2') this.hooks.onTsunami?.('medium');
-      if (k === '3') this.hooks.onTsunami?.('large');
-      if (k === '4') this.hooks.onTsunami?.('ultra');
-      if (k === 'c') this.hooks.onCamera?.();
-      if (k === 'r') this.hooks.onReset?.();
-      if (k === 'h') this.hooks.onHelp?.();
-      if (k === 'p' || k === 'escape') this.hooks.onPause?.();
-      if (k === 'm') this.hooks.onMute?.();
-      if (['w', 'a', 's', 'd', ' '].includes(k)) e.preventDefault();
-    };
-    this._ku = (e) => this.keys.delete(e.key.toLowerCase());
-
-    this._md = (e) => {
-      if (e.target.closest?.('.ui-block')) return;
-      this.mouse.down = true;
-      this.mouse.button = e.button;
-      this.mouse.x = e.clientX; this.mouse.y = e.clientY;
-      this.mouse.moved = false;
-    };
-    this._mm = (e) => {
-      if (!this.mouse.down) return;
-      const dx = e.clientX - this.mouse.x;
-      const dy = e.clientY - this.mouse.y;
-      if (Math.abs(dx) + Math.abs(dy) > 2) this.mouse.moved = true;
-      this.hooks.onOrbit?.(dx, dy);
-      this.mouse.x = e.clientX; this.mouse.y = e.clientY;
-    };
-    this._mu = () => { this.mouse.down = false; };
-    this._wheel = (e) => {
-      if (e.target.closest?.('.ui-block')) return;
-      this.hooks.onZoom?.(e.deltaY);
-    };
-    this._ctx = (e) => e.preventDefault();
-
-    window.addEventListener('keydown', this._kd);
-    window.addEventListener('keyup', this._ku);
-    dom.addEventListener('mousedown', this._md);
-    window.addEventListener('mousemove', this._mm);
-    window.addEventListener('mouseup', this._mu);
-    dom.addEventListener('wheel', this._wheel, { passive: true });
-    dom.addEventListener('contextmenu', this._ctx);
+      if(k==='w')this.nudgeThrottle(.05);
+      if(k==='s')this.nudgeThrottle(-.05);
+      if(k==='x')this.setThrottle(0);
+      if(k==='shift')this.setThrottle(1);
+      if(k==='control')this.setThrottle(-.35);
+      if(k===' '){e.preventDefault();this.hooks.onAnchor?.();}
+      const wave=Object.values(TSUNAMI_TIERS).find(tier=>tier.key===k);
+      if(wave)this.hooks.onTsunami?.(wave.id);
+      if(k==='c')this.hooks.onCamera?.();
+      if(k==='r')this.hooks.onReset?.();
+      if(k==='m')this.hooks.onMute?.();
+      if(k==='f')this.hooks.onMainFire?.();
+      if(k==='g')this.hooks.onSalvo?.();
+      if(k===',')this.hooks.onGunSide?.(-1);
+      if(k==='.')this.hooks.onGunSide?.(1);
+      if(k==='t')this.hooks.onPeriscope?.();
+      if(['w','a','s','d'].includes(k))e.preventDefault();
+    });
+    this.listen(window,'keyup',e=>this.presses.delete(`key:${e.key.toLowerCase()}`));
+    this.listen(window,'blur',()=>this.release());
+    this.listen(window,'safeareachange',()=>this.release());
+    this.listen(document,'visibilitychange',()=>{if(document.hidden)this.release();});
+    this.listen(this.dom,'pointerdown',e=>{
+      if(!this.interactive||!viewport.contains(e.clientX,e.clientY))return;
+      this.contacts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      this.dom.setPointerCapture(e.pointerId);e.preventDefault();
+    });
+    this.listen(this.dom,'pointermove',e=>{
+      if(!this.contacts.has(e.pointerId))return;
+      if(!this.interactive||!viewport.contains(e.clientX,e.clientY)){this.contacts.delete(e.pointerId);return;}
+      const before=gesture(this.contacts);
+      this.contacts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      const after=gesture(this.contacts);
+      this.hooks.onOrbit?.(after.x-before.x,after.y-before.y);
+      if(before.span>0&&after.span>0)this.hooks.onZoom?.(Math.log(before.span/after.span)/Math.log(1.0016));
+      e.preventDefault();
+    });
+    for(const type of ['pointerup','pointercancel','lostpointercapture'])this.listen(this.dom,type,e=>this.contacts.delete(e.pointerId));
+    this.listen(this.dom,'wheel',e=>{if(this.interactive&&viewport.contains(e.clientX,e.clientY))this.hooks.onZoom?.(e.deltaY);},{passive:true});
+    this.listen(this.dom,'contextmenu',e=>e.preventDefault());
+    for(const el of document.querySelectorAll('[data-hold-key]')){
+      el.style.touchAction='none';
+      const end=e=>{this.presses.delete(`pointer:${e.pointerId}`);el.classList.remove('pressed');};
+      this.listen(el,'pointerdown',e=>{
+        if(!this.interactive||!viewport.contains(e.clientX,e.clientY))return;
+        this.presses.set(`pointer:${e.pointerId}`,el.dataset.holdKey);el.classList.add('pressed');
+        el.setPointerCapture(e.pointerId);e.preventDefault();
+      });
+      this.listen(el,'pointermove',e=>{
+        const r=el.getBoundingClientRect();
+        if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)end(e);
+      });
+      for(const type of ['pointerup','pointercancel','lostpointercapture'])this.listen(el,type,end);
+    }
+    const actions={pause:()=>this.hooks.onPause?.(),help:()=>this.hooks.onHelp?.(),
+      'zoom-in':()=>this.hooks.onZoom?.(-100),'zoom-out':()=>this.hooks.onZoom?.(100),
+      stop:()=>this.setThrottle(0),run:()=>this.hooks.onToggleRun?.(),reset:()=>this.hooks.onReset?.(),
+      'main-fire':()=>this.hooks.onMainFire?.(),'salvo':()=>this.hooks.onSalvo?.(),
+      'port-guns':()=>this.hooks.onGunSide?.(-1),'starboard-guns':()=>this.hooks.onGunSide?.(1),
+      periscope:()=>this.hooks.onPeriscope?.()};
+    for(const el of document.querySelectorAll('[data-input-action]'))this.listen(el,'click',()=>{
+      this.release();actions[el.dataset.inputAction]();
+    });
+    for(const el of document.querySelectorAll('button[data-panel]'))this.listen(el,'click',()=>{
+      this.release();this.hud.dataset.panel=el.dataset.panel;
+      for(const b of document.querySelectorAll('button[data-panel]'))b.setAttribute('aria-pressed',String(b===el));
+    });
   }
-
-  nudgeThrottle(d) {
-    this.setThrottle(this.throttle + d);
+  nudgeThrottle(delta){this.setThrottle(this.throttle+delta);}
+  setThrottle(value){this.throttle=Math.max(-.35,Math.min(1,value));this.hooks.onThrottle?.(this.throttle);}
+  update(dt){
+    if(!this.interactive||this.walkMode){this.rudder=0;return;}
+    const keys=this.keys,want=Number(keys.has('d'))-Number(keys.has('a'));
+    this.rudderTarget=want;
+    this.rudder+=(want-this.rudder)*Math.min(1,dt*(want===0?2.6:3.4));
   }
-
-  setThrottle(v) {
-    this.throttle = Math.max(-0.35, Math.min(1, v));
-    this.hooks.onThrottle?.(this.throttle);
-  }
-
-  /** Called every frame: rudder springs back to centre like a real helm
-   *  (held neutral while walking — the ship holds her course). */
-  update(dt) {
-    if (!this.enabled || this.walkMode) { this.rudder = 0; return; }
-    let want = 0;
-    if (this.keys.has('a')) want -= 1;
-    if (this.keys.has('d')) want += 1;
-    this.rudderTarget = want;
-    const rate = want === 0 ? 2.6 : 3.4;
-    this.rudder += (want - this.rudder) * Math.min(1, dt * rate);
-  }
-
-  dispose() {
-    window.removeEventListener('keydown', this._kd);
-    window.removeEventListener('keyup', this._ku);
-    this.dom.removeEventListener('mousedown', this._md);
-    window.removeEventListener('mousemove', this._mm);
-    window.removeEventListener('mouseup', this._mu);
-    this.dom.removeEventListener('wheel', this._wheel);
-    this.dom.removeEventListener('contextmenu', this._ctx);
-  }
+  dispose(){this.release();this._events.abort();}
+}
+function gesture(contacts){
+  const points=[...contacts.values()],n=points.length;
+  const x=points.reduce((sum,p)=>sum+p.x,0)/n,y=points.reduce((sum,p)=>sum+p.y,0)/n;
+  const span=Math.sqrt(points.reduce((sum,p)=>sum+(p.x-x)**2+(p.y-y)**2,0)/n);
+  return {x,y,span};
 }

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>钢铁巨舰 · 海啸 | Steel Leviathan</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%2305080c'/><path d='M4 20h24l-3 5H7z' fill='%234fd6ff'/><rect x='14' y='8' width='4' height='11' fill='%234fd6ff'/></svg>" />
 <style>
@@ -103,7 +103,11 @@
   .hlbl{font-size:9.5px;letter-spacing:.20em;color:var(--txt-dim);text-transform:uppercase}
 
   /* instruments */
-  #inst{position:absolute;left:20px;top:18px;padding:14px 16px;min-width:212px}
+  #port{position:absolute;left:20px;top:18px;width:212px;
+    display:flex;flex-direction:column;gap:12px;max-height:calc(100% - 116px);
+    overflow:auto;scrollbar-width:thin}
+  #port>*{flex-shrink:0}
+  #inst{padding:14px 16px}
   #inst .row{display:flex;justify-content:space-between;align-items:baseline;
     padding:5px 0;border-bottom:1px solid rgba(120,180,215,.10)}
   #inst .row:last-child{border-bottom:none}
@@ -115,11 +119,11 @@
   .good{color:var(--green)}
 
   /* attitude indicator */
-  #adi{position:absolute;left:20px;top:214px;width:212px;padding:12px 14px}
+  #adi{padding:12px 14px}
   #adi canvas{width:184px;height:184px;display:block;margin:0 auto}
 
   /* integrity */
-  #dmg{position:absolute;left:20px;top:448px;width:212px;padding:12px 14px}
+  #dmg{padding:12px 14px}
   .meter{height:5px;background:rgba(255,255,255,.09);margin-top:7px;position:relative;overflow:hidden}
   .meter i{position:absolute;inset:0 100% 0 0;transition:right .3s}
   .meter.ok i{background:linear-gradient(90deg,#2f9e63,var(--green))}
@@ -127,9 +131,11 @@
   .meter.low i{background:linear-gradient(90deg,#a02020,var(--red))}
 
   /* tsunami panel */
-  #tsu{position:absolute;right:20px;top:18px;width:246px;padding:14px 16px}
+  #controls{position:absolute;right:20px;top:18px;width:246px;display:flex;flex-direction:column;gap:12px;max-height:calc(100% - 166px);overflow:auto;scrollbar-width:thin}
+  #tsu{padding:14px 16px}
   #tsu .opt{display:flex;justify-content:space-between;align-items:center;
-    padding:10px 12px;margin-top:8px;border:1px solid var(--line);cursor:pointer;
+    width:100%;font:inherit;text-align:left;gap:8px;
+    min-height:48px;padding:10px 12px;margin-top:8px;border:1px solid var(--line);cursor:pointer;
     transition:.18s;background:rgba(255,255,255,.02)}
   #tsu .opt:hover{background:rgba(79,214,255,.12);border-color:var(--line-strong)}
   #tsu .opt .nm{font-size:12px;letter-spacing:.08em}
@@ -138,9 +144,14 @@
   #tsu .opt.m .nm{color:var(--amber)}
   #tsu .opt.l .nm{color:var(--red)}
   #tsu .opt.dis{opacity:.4;cursor:not-allowed}
+  #nightBtn{color:var(--cyan)}
 
   /* throttle */
-  #thr{position:absolute;right:20px;top:250px;width:246px;padding:14px 16px}
+  #thr{padding:14px 16px}
+  #anchorControl{position:absolute;right:20px;bottom:22px;width:246px;padding:12px 16px}
+  #anchorBtn{width:100%;min-height:48px;background:rgba(79,214,255,.12);border:1px solid var(--line-strong);color:var(--cyan);font:inherit;cursor:pointer}
+  #anchorBtn:disabled{opacity:.65;cursor:wait}
+  #anchorStatus{font-size:12px;line-height:1.6;text-align:center;margin-top:8px;color:var(--txt-dim)}
   .lever{position:relative;height:250px;margin:12px auto 0;width:78px;touch-action:none;cursor:grab}
   .lever:active{cursor:grabbing}
   .lever .track{position:absolute;left:50%;top:0;bottom:0;width:10px;margin-left:-5px;
@@ -169,15 +180,15 @@
   #alert .a2{font-size:10.5px;color:var(--txt-dim);letter-spacing:.10em;margin-top:6px}
 
   /* camera bar */
-  #cams{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);display:flex;gap:6px;
+  #cams{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);display:flex;gap:8px;
     padding:7px 8px}
-  #cams .c{padding:7px 15px;font-size:11px;letter-spacing:.10em;color:var(--txt-dim);
+  #cams .c{min-height:48px;display:flex;align-items:center;justify-content:center;padding:7px 15px;font-size:11px;letter-spacing:.10em;color:var(--txt-dim);
     cursor:pointer;border:1px solid transparent;transition:.18s}
   #cams .c:hover{color:var(--txt);background:rgba(79,214,255,.10)}
   #cams .c.on{color:#04121a;background:var(--cyan);border-color:var(--cyan)}
 
   /* log */
-  #log{position:absolute;right:20px;bottom:22px;width:340px;max-height:172px;overflow:hidden;
+  #log{position:absolute;left:20px;bottom:22px;width:212px;max-height:128px;overflow:hidden;
     padding:11px 14px;display:flex;flex-direction:column-reverse}
   #log div{font-size:10.5px;line-height:1.75;color:var(--txt-dim);letter-spacing:.04em}
   #log div:first-child{color:var(--txt)}
@@ -212,12 +223,111 @@
   .rgrid .v{font-size:24px;letter-spacing:.03em}
   .rgrid .v small{font-size:11px;color:var(--txt-dim);margin-left:3px}
 
-  @media (max-width:900px){
-    #adi,#dmg{display:none}
-    #tsu,#thr{width:190px}
-    #log{display:none}
-    .lever{height:170px}
-  }
+  /* The viewport boundary is measured once in viewport.js, in CSS pixels. */
+  #hud,.screen{inset:auto;left:var(--safe-left,0px);top:var(--safe-top,0px);width:var(--safe-width,100vw);height:var(--safe-height,100dvh)}
+  #hud:not(.on){visibility:hidden;pointer-events:none}
+  #hud:not(.on) .ui-block{pointer-events:none}
+  .screen{padding:16px}
+  .wrap{width:min(1180px,100%);max-height:100%;padding:2px}
+  #loading .inner{width:min(660px,100%);max-height:100%;overflow:auto;padding:2px}
+  [hidden]{display:none!important}
+  .btn,button{min-width:48px;min-height:48px;touch-action:manipulation}
+  #shipCards .stat{white-space:pre-line}
+  button{font:inherit;color:var(--txt);background:rgba(20,40,55,.75);border:1px solid var(--line-strong);cursor:pointer;padding:8px}
+  button:focus-visible,.btn:focus-visible,.card:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+  button:active,.pressed{background:rgba(79,214,255,.35)}
+  #statsPanel{display:flex;flex-direction:column;gap:12px}
+  #helmPanel{position:absolute;right:20px;top:334px;bottom:22px;width:246px;display:flex;flex-direction:column;gap:8px;overflow:auto}
+  #helmPanel>*{flex-shrink:0}
+  #controls{max-height:248px}
+  #anchorControl{position:static;width:auto}
+  #steering{padding:8px}
+  .touch-directions{display:grid;grid-template-columns:repeat(auto-fit,minmax(48px,1fr));gap:8px}
+  .touch-note{font-size:10px;line-height:1.5;text-align:center;margin-top:8px;color:var(--txt-dim)}
+  .extra-controls{margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+  .extra-controls .status{font-size:11px;line-height:1.4;margin-top:8px;overflow-wrap:anywhere}
+  [aria-pressed="true"]{border-color:var(--cyan)}
+  #periscopeView{position:fixed;left:var(--safe-left,0px);top:var(--safe-top,0px);width:var(--safe-width,100vw);height:var(--safe-height,100dvh);z-index:12;pointer-events:none;background:radial-gradient(circle at center,transparent 0,min(37vw,37vh),rgba(1,5,6,.96) calc(min(37vw,37vh) + 2px));}
+  #periscopeView::before,#periscopeView::after{content:"";position:absolute;left:50%;top:50%;background:rgba(155,205,170,.6)}
+  #periscopeView::before{width:130px;height:1px;transform:translate(-50%,-50%)}
+  #periscopeView::after{width:1px;height:90px;transform:translate(-50%,-50%)}
+  #hud:not([data-walking="true"]) .walk-only,#hud[data-walking="true"] .sail-only{display:none}
+  #utility{position:absolute;right:282px;top:18px;display:flex;gap:8px}
+  #mobileTabs{position:absolute;right:20px;top:278px;width:246px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  #mobileTabs .mobile-tab{display:none}
+  #weaponsPanel{position:absolute;right:20px;top:334px;bottom:22px;width:246px;padding:8px;overflow:auto;display:none}
+  #hud[data-panel="weapons"] #weaponsPanel{display:block}
+  #hud[data-panel="weapons"] #helmPanel{display:none}
+  #cams{max-width:calc(100% - 570px);flex-wrap:wrap;justify-content:center}
+  #cams .c{background:transparent;font:inherit;font-size:11px;min-width:64px}
+  #help .box{width:min(760px,calc(100% - 24px));max-height:calc(100% - 24px);overflow:auto;padding:24px}
+  .close-help{display:block;margin:0 0 16px auto}
+  #pause{padding:16px;overflow:auto}
+  #hud:has(#help.on)>:not(#help),#hud:has(#pause.on)>:not(#pause){visibility:hidden;pointer-events:none}
+
+  .compact-ui #hud{padding:8px;display:flex;flex-direction:column;gap:8px}
+  .compact-ui #port{display:contents}
+  .compact-ui #inst{position:static;order:0;flex:none;width:calc(100% - 112px);padding:5px 8px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px;min-height:56px}
+  .compact-ui #shipStatusLabel{display:none}
+  .compact-ui #inst .row{gap:4px;min-width:0;padding:2px 0;white-space:nowrap;border:0}
+  .compact-ui #inst .row:nth-child(n+7),.compact-ui #inst .row:nth-child(5){display:none}
+  .compact-ui #hud[data-panel="stats"] #inst .row{display:flex}
+  .compact-ui #inst .k{font-size:10px;letter-spacing:0}
+  .compact-ui #inst .v{font-size:12px;letter-spacing:0}
+  .compact-ui #inst .v small{font-size:9px;margin-left:2px}
+  .compact-ui #utility{top:8px;right:8px}
+  .compact-ui #utility button{width:48px;padding:4px;font-size:12px}
+  .compact-ui #alert{position:static;transform:none;order:1;flex:none;min-width:0;width:100%;padding:7px 8px}
+  .compact-ui #alert .a1{font-size:12px;letter-spacing:.06em}
+  .compact-ui #alert .a2{font-size:10px;letter-spacing:0;line-height:1.4;margin-top:3px;overflow-wrap:anywhere}
+  .compact-ui #weaponsPanel,.compact-ui #helmPanel,.compact-ui #controls,.compact-ui #cams,.compact-ui #statsPanel{position:static;transform:none;order:2;flex:0 1 auto;min-height:0;max-height:290px;width:100%;max-width:none;margin-top:auto;overflow:auto;scrollbar-width:thin;display:none}
+  .compact-ui #hud[data-panel="helm"] #helmPanel{display:grid;grid-template-columns:88px 1fr;grid-template-areas:"throttle anchor" "throttle steer";gap:8px}
+  .compact-ui #hud[data-panel="weapons"] #weaponsPanel{display:block}
+  .compact-ui #hud[data-panel="waves"] #controls{display:block}
+  .compact-ui #hud[data-panel="cameras"] #cams{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:8px}
+  .compact-ui #hud[data-panel="stats"] #statsPanel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .compact-ui #thr{grid-area:throttle;padding:8px 4px}
+  .compact-ui #thr .hlbl{font-size:10px;text-align:center;letter-spacing:0}
+  .compact-ui .lever{height:88px;width:64px;margin-top:12px;margin-bottom:10px}
+  .compact-ui .lever .knob{width:48px;margin-left:-24px}
+  .compact-ui .lever .tickl{display:none}
+  .compact-ui #thrPct{font-size:20px;margin-top:0}
+  .compact-ui #thrOrder{font-size:10px;letter-spacing:0}
+  .compact-ui #anchorControl{grid-area:anchor;padding:8px}
+  .compact-ui #anchorStatus{font-size:11px;line-height:1.25;margin-top:5px}
+  .compact-ui #steering{grid-area:steer}
+  .compact-ui .touch-directions button{padding:4px;font-size:12px}
+  .compact-ui #tsu{padding:8px}
+  .compact-ui #tsu .opt{font-size:12px}
+  .compact-ui #tsuBear{display:none!important}
+  .compact-ui #waveKeys{display:none}
+  .compact-ui #mobileTabs{position:static;display:grid;order:3;flex:none;width:100%;grid-template-columns:repeat(auto-fit,minmax(48px,1fr));gap:8px}
+  .compact-ui #mobileTabs .mobile-tab{display:block}
+  .compact-ui #mobileTabs button{padding:5px;font-size:12px}
+  .compact-ui #mobileTabs [aria-pressed="true"]{background:var(--cyan);color:#061922}
+  /* Wide safe rectangles leave an unobstructed sailing view to the left. */
+  .compact-ui.wide-ui #weaponsPanel,.compact-ui.wide-ui #helmPanel,.compact-ui.wide-ui #controls,.compact-ui.wide-ui #cams,.compact-ui.wide-ui #statsPanel,.compact-ui.wide-ui #mobileTabs{width:min(100%,360px,max(280px,48%));align-self:flex-end}
+
+  .compact-ui #adi{padding:8px;overflow:hidden}
+  .compact-ui #adi canvas{width:100%;height:auto}
+  .compact-ui #dmg{padding:10px}
+  .compact-ui #log{display:none}
+  .compact-ui #help .box{padding:16px}
+  .compact-ui #help .grid{grid-template-columns:1fr;gap:8px}
+  .compact-ui #help .kk{gap:16px;line-height:1.6}
+  .compact-ui #help .kk span:last-child{text-align:right}
+  .compact-ui #help .note{font-size:12px;line-height:1.6;margin-top:16px}
+  .compact-ui .sub{font-size:12px;line-height:1.6;margin-bottom:16px}
+  .compact-ui .cards{grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;margin-bottom:16px}
+  .compact-ui .card{padding:16px}
+  .compact-ui .card h3{padding-right:34px;letter-spacing:0}
+  .compact-ui .foot{gap:12px}
+  .compact-ui .title{font-size:24px;letter-spacing:0}
+  .compact-ui #loading h1{letter-spacing:.1em;text-indent:.1em;font-size:28px}
+  .compact-ui #loading h2{letter-spacing:.15em;text-indent:.15em;margin-bottom:24px}
+  .compact-ui .tip{margin-top:20px;line-height:1.6}
+  .compact-ui .rgrid{margin:16px 0;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .compact-ui .rgrid div{padding:12px 8px}
 
   /* ---------------- cockpit glass (first person) ----------------
      Sits above the WebGL canvas but below the HUD. The canvas inside it is
@@ -269,18 +379,20 @@
 </div>
 
 <!-- ============ HUD ============ -->
-<div id="hud">
+<div id="hud" data-panel="helm">
+  <div id="port">
   <div id="inst" class="hpanel ui-block">
-    <div class="hlbl" style="margin-bottom:6px">CVN-78 · 舰况</div>
-    <div class="row"><span class="k">航速</span><span class="v"><span id="iSpeed">0.0</span><small>kn</small></span></div>
+    <div class="hlbl" id="shipStatusLabel" style="margin-bottom:6px">舰况</div>
+    <div class="row"><span class="k">航速</span><span class="v"><span id="iSpeed">0.0</span><small id="speedUnit">kn</small></span></div>
     <div class="row"><span class="k">航向</span><span class="v"><span id="iHdg">000</span><small>°</small></span></div>
-    <div class="row"><span class="k">横摇 ROLL</span><span class="v" id="iRoll">0.0°</span></div>
-    <div class="row"><span class="k">纵摇 PITCH</span><span class="v" id="iPitch">0.0°</span></div>
+    <div class="row"><span class="k">横摇</span><span class="v" id="iRoll">0.0°</span></div>
+    <div class="row"><span class="k">纵摇</span><span class="v" id="iPitch">0.0°</span></div>
     <div class="row"><span class="k">浪高</span><span class="v"><span id="iWave">0.0</span><small>m</small></span></div>
     <div class="row"><span class="k">锚</span><span class="v" id="iAnchor">收起</span></div>
     <div class="row"><span class="k">舵角</span><span class="v" id="iRudder">0°</span></div>
   </div>
 
+  <div id="statsPanel" class="ui-block">
   <div id="adi" class="hpanel">
     <div class="hlbl">姿态仪</div>
     <canvas id="adiC" width="368" height="368"></canvas>
@@ -293,16 +405,16 @@
     <div class="meter ok" id="mFlood"><i style="right:100%"></i></div>
     <div id="dmgState" style="font-size:10px;color:var(--txt-dim);margin-top:10px;letter-spacing:.08em">状态正常</div>
   </div>
+  </div>
 
+  </div>
+
+  <div id="controls" class="ui-block">
   <div id="tsu" class="hpanel ui-block">
-    <div class="hlbl">海啸 · 触发</div>
-    <div class="opt s" data-tier="small"><span class="nm">小型海啸</span><span class="hh">2–3 m</span></div>
-    <div class="opt m" data-tier="medium"><span class="nm">中型海啸</span><span class="hh">6–7 m</span></div>
-    <div class="opt l" data-tier="large"><span class="nm">大型海啸</span><span class="hh">11–15 m</span></div>
-    <div class="opt l" data-tier="ultra" style="margin-top:5px;border-color:rgba(255,77,77,.55)">
-      <span class="nm" style="color:var(--red);font-weight:500">超级巨型海啸</span>
-      <span class="hh" style="color:var(--red)">100–150 m · 水墙</span></div>
-    <div style="font-size:9.5px;color:var(--txt-dim);margin-top:10px;letter-spacing:.06em">快捷键 1 / 2 / 3 / 4</div>
+    <div class="hlbl">浪型 · 触发</div>
+    <div id="waveOptions"></div>
+    <button id="nightBtn" type="button" class="opt" aria-pressed="false">黑夜 · 关闭</button>
+    <div id="waveKeys" style="font-size:9.5px;color:var(--txt-dim);margin-top:10px;letter-spacing:.06em"></div>
     <div id="tsuBear" style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px;display:none">
       <div class="hlbl">来袭方位</div>
       <canvas id="tsuC" width="300" height="132" style="width:150px;height:66px;display:block;margin:6px auto 0"></canvas>
@@ -310,6 +422,8 @@
     </div>
   </div>
 
+  </div>
+  <div id="helmPanel" class="ui-block">
   <div id="thr" class="hpanel ui-block">
     <div class="hlbl">马力 TELEGRAPH</div>
     <div class="lever" id="lever">
@@ -319,6 +433,61 @@
     <div id="thrPct">0<small>%</small></div>
     <div id="thrOrder">停车</div>
   </div>
+  <div id="anchorControl" class="hpanel ui-block">
+    <button id="anchorBtn" type="button">抛锚</button>
+    <div id="anchorStatus" role="status">锚已收起</div>
+  </div>
+
+  <div id="steering" class="hpanel ui-block">
+    <div class="touch-directions">
+      <button type="button" data-hold-key="w" class="walk-only">前进</button>
+      <button type="button" data-hold-key="a">左</button>
+      <button type="button" data-input-action="stop" class="sail-only">停车</button>
+      <button type="button" data-hold-key="s" class="walk-only">后退</button>
+      <button type="button" data-hold-key="d">右</button>
+      <button type="button" data-input-action="run" class="walk-only">走 / 跑</button>
+    </div>
+    <div class="touch-note">按住方向转舵 · 拖动画面观察</div>
+    <div id="submarineControls" class="extra-controls" hidden>
+      <div class="touch-directions">
+        <button id="periscopeBtn" type="button" data-input-action="periscope">开启潜望镜</button>
+      </div>
+      <div id="submarineStatus" class="status">海面航行 · 潜望镜收起</div>
+    </div>
+  </div>
+  </div>
+
+  <div id="weaponsPanel" class="hpanel ui-block">
+    <div class="hlbl">舰炮与近防炮</div>
+    <div class="touch-directions">
+      <button id="mainFireBtn" type="button" data-input-action="main-fire" hidden>舰炮 F</button>
+      <button id="ciwsFireBtn" type="button" data-hold-key="v" hidden>近防炮 V</button>
+      <button type="button" data-hold-key="a">左舵</button>
+      <button type="button" data-hold-key="d">右舵</button>
+    </div>
+    <div id="broadsideControls" class="extra-controls" hidden>
+      <div class="touch-directions">
+        <button id="portGunsBtn" type="button" data-input-action="port-guns" aria-pressed="false">左舷</button>
+        <button id="starboardGunsBtn" type="button" data-input-action="starboard-guns" aria-pressed="true">右舷</button>
+        <button id="salvoBtn" type="button" data-input-action="salvo">齐射 G</button>
+        <button type="button" data-hold-key="j">炮塔 ↶</button>
+        <button type="button" data-hold-key="l">炮塔 ↷</button>
+      </div>
+      <div id="gunBearing" class="status">右舷 · 90°</div>
+    </div>
+  </div>
+
+  <div id="utility" class="ui-block">
+    <button type="button" data-input-action="pause">暂停</button>
+    <button type="button" data-input-action="help">帮助</button>
+  </div>
+  <nav id="mobileTabs" class="ui-block" aria-label="操作面板">
+    <button type="button" data-panel="helm" aria-pressed="true">操纵</button>
+    <button id="weaponPanelBtn" type="button" data-panel="weapons" aria-pressed="false">武器</button>
+    <button type="button" class="mobile-tab" data-panel="waves" aria-pressed="false">海浪</button>
+    <button type="button" class="mobile-tab" data-panel="cameras" aria-pressed="false">视角</button>
+    <button type="button" class="mobile-tab" data-panel="stats" aria-pressed="false">舰况</button>
+  </nav>
 
   <div id="alert" class="hpanel">
     <div class="a1" id="alertT">海啸来袭</div>
@@ -326,26 +495,34 @@
   </div>
 
   <div id="cams" class="hpanel ui-block">
-    <div class="c on" data-cam="orbit">环绕</div>
-    <div class="c" data-cam="chase">跟随</div>
-    <div class="c" data-cam="bridge">舰桥</div>
-    <div class="c" data-cam="deck">甲板</div>
-    <div class="c" data-cam="cinema">海啸视角</div>
-    <div class="c" data-cam="walk">甲板行走</div>
+    <button type="button" class="c on" data-cam="orbit">环绕</button>
+    <button type="button" class="c" data-cam="chase">跟随</button>
+    <button type="button" class="c" data-cam="bridge">舰桥</button>
+    <button type="button" class="c" data-cam="deck">甲板</button>
+    <button type="button" class="c" data-cam="cinema">海啸视角</button>
+    <button type="button" class="c" data-cam="walk">甲板行走</button>
+    <button type="button" data-input-action="zoom-in">拉近</button>
+    <button type="button" data-input-action="zoom-out">拉远</button>
   </div>
 
   <div id="log" class="hpanel"></div>
 
-  <div id="help">
+  <div id="help" class="ui-block" role="dialog" aria-label="操作说明">
     <div class="box">
+      <button class="close-help" type="button" data-input-action="help">关闭说明</button>
       <h3>操 作 说 明</h3>
       <div class="grid">
         <div class="kk"><span>W / S</span><span>前进 / 后退（增减马力）</span></div>
         <div class="kk"><span>A / D</span><span>左舵 / 右舵</span></div>
         <div class="kk"><span>Shift / Ctrl</span><span>全速前进 / 全速后退</span></div>
         <div class="kk"><span>X</span><span>停车</span></div>
-        <div class="kk"><span>空格</span><span>抛锚 / 起锚</span></div>
-        <div class="kk"><span>1 / 2 / 3 / 4</span><span>小 / 中 / 大 / 超巨型海啸</span></div>
+        <div class="kk"><span>抛锚按钮 / 空格</span><span>抛锚等待 3 秒 / 起锚</span></div>
+        <div id="helpWaves" style="display:contents"></div>
+        <div class="kk"><span>F / 舰炮</span><span>主炮开火 · 火光、烟雾与后坐力</span></div>
+        <div class="kk"><span>V / 近防炮</span><span>长按射击 · 自动拦截陨石碎块</span></div>
+        <div class="kk"><span>G / 左舷 / 右舷</span><span>大和、衣阿华：选舷后全炮齐射</span></div>
+        <div class="kk"><span>J / L</span><span>长按旋转炮塔；逗号 / 句号选左 / 右舷</span></div>
+        <div class="kk"><span>T</span><span>潜艇：升降潜望镜；升起后选择舰岛视角</span></div>
         <div class="kk"><span>鼠标拖动</span><span>360° 环绕观察</span></div>
         <div class="kk"><span>滚轮</span><span>拉近 / 拉远</span></div>
         <div class="kk"><span>C</span><span>切换视角</span></div>
@@ -355,16 +532,17 @@
         <div class="kk"><span>P / Esc</span><span>暂停</span></div>
       </div>
       <div class="note">
-        海啸始终从<b>舰艏方向</b>推来 —— 现实中深海海啸就是这样一道长周期涌浪，而不是一堵水墙。<br>
+        浪群会从<b>前后左右</b>交汇而来，左右伴随浪较小。30 米大浪厚度为 210 米，前缘距舰艏约 100 米。<br>
         迎浪时主要考验纵摇与拍击；一旦失去航速、被涌浪推成横向，就会开始剧烈横摇，<br>
-        横摇超过约 27° 时飞行甲板边缘入水，复原力矩骤降，这时才真的可能倾覆。
+        大幅横摇使甲板和开口入水，储备浮力逐渐损失，可能导致倾覆。
       </div>
     </div>
   </div>
 
-  <div id="pause">
+  <div id="pause" class="ui-block" role="dialog" aria-label="暂停">
     <h2>已 暂 停</h2>
     <div class="btn ui-block" id="btnResume">继续</div>
+    <button type="button" class="btn ghost" data-input-action="reset">重置航态</button>
     <div class="btn ghost ui-block" id="btnBackLobby">返回机库</div>
   </div>
 </div>
@@ -377,7 +555,7 @@
     <h2>STEEL LEVIATHAN · TSUNAMI</h2>
     <div class="barwrap"><i id="barFill"></i></div>
     <div class="barmeta"><span id="barPct">1%</span><span id="barMsg">初始化海洋模型</span></div>
-    <div class="tip" id="tip">正在生成 337 米飞行甲板与舰岛结构…</div>
+    <div class="tip" id="tip">正在生成企业号飞行甲板与舰岛结构…</div>
     <div class="btn" id="enterBtn">进 入 机 库</div>
   </div>
 </div>
@@ -388,34 +566,8 @@
   <div class="wrap">
     <div class="eyebrow">Hangar / 机库</div>
     <div class="title">选择你的舰船</div>
-    <div class="sub">当前版本仅开放航空母舰。后续将陆续加入驱逐舰、巡洋舰、补给舰与潜艇。</div>
-    <div class="cards" id="shipCards">
-      <div class="card sel" data-ship="carrier">
-        <div class="tag">可 用</div>
-        <div class="ico">🛳</div>
-        <h3>核动力航空母舰</h3>
-        <p>参考福特级 / 尼米兹级。满载排水量十万吨，全通式飞行甲板，四部弹射器。</p>
-        <div class="stat">
-          舰长 <b>337 m</b> · 舰宽 <b>78 m</b><br>
-          吃水 <b>12.2 m</b> · 排水量 <b>100,000 t</b><br>
-          横摇周期 <b>约 12 s</b>
-        </div>
-      </div>
-      <div class="card locked" data-ship="destroyer">
-        <div class="tag">开发中</div>
-        <div class="ico">🚤</div>
-        <h3>导弹驱逐舰</h3>
-        <p>更轻、更快、更灵活，但也更容易被浪打翻。</p>
-        <div class="stat">敬请期待</div>
-      </div>
-      <div class="card locked" data-ship="submarine">
-        <div class="tag">开发中</div>
-        <div class="ico">🌊</div>
-        <h3>攻击型核潜艇</h3>
-        <p>可下潜规避海面涌浪，代价是失去对海面的感知。</p>
-        <div class="stat">敬请期待</div>
-      </div>
-    </div>
+    <div id="fleetSummary" class="sub"></div>
+    <div class="cards" id="shipCards"></div>
     <div class="foot">
       <div class="sub" style="margin:0">已选择：<b id="selName">核动力航空母舰</b></div>
       <div class="btn" id="toMode">下 一 步</div>
@@ -424,30 +576,32 @@
 </div>
 
 <!-- ============ MODE ============ -->
+<div id="periscopeView" hidden aria-hidden="true"></div>
 <div class="screen hidden" id="mode">
   <div class="bg"></div><div class="vign"></div>
   <div class="wrap">
     <div class="eyebrow">Scenario / 模式</div>
     <div class="title">选择游戏模式</div>
-    <div class="sub">普通模式下海面平静，你可以自由航行，随时手动触发任意规模的海啸。</div>
+    <div class="sub">启航即进入平均 5–6 米的多向涌浪，可手动召唤疯狗浪、大型海啸或 30 米大浪。</div>
     <div class="cards">
       <div class="card sel" data-mode="free">
         <div class="tag">推 荐</div>
         <div class="ico">⚓</div>
         <h3>普通模式 · 自由航行</h3>
-        <p>无限海域，海况平缓。随时选择小 / 中 / 大型海啸，练习操舰与观察舰体姿态。</p>
-        <div class="stat">海况 <b>1.2 m 轻浪</b><br>海啸 <b>手动触发</b></div>
+        <p>前后左右交叉涌浪。大型浪群分批到来，两侧伴随较小的浪，练习操舰与观察舰体姿态。</p>
+        <div class="stat">海况 <b>5–6 m 恶劣海况</b><br>海啸 <b>手动触发</b></div>
       </div>
-      <div class="card locked" data-mode="random">
-        <div class="tag">开发中</div>
+      <div class="card" data-mode="random">
+        <div class="tag">可 用</div>
         <div class="ico">🌪</div>
         <h3>随机海况模式</h3>
-        <p>海况随机恶化，海啸随时可能不期而至，考验真实应变。</p>
-        <div class="stat">敬请期待</div>
+        <p>随机昼夜交替。白天通常出现随机海啸，黑夜常有陨石入海，军舰长按近防炮拦截碎石。</p>
+        <div class="stat">普通海图 · 陨石海啸 <b>20–100 m</b></div>
       </div>
     </div>
     <div class="foot">
       <div class="btn ghost" id="backLobby">返回</div>
+      <button class="btn ghost" id="nightOption" type="button" aria-pressed="false">黑夜 · 关闭</button>
       <div class="btn" id="startGame">启 航</div>
     </div>
   </div>

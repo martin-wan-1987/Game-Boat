@@ -1,94 +1,20 @@
-/**
- * ship.js — procedurally built Ford/Nimitz-class aircraft carrier.
- *
- * Everything is generated in code (no external models) so the whole thing is a
- * single self-contained project. Dimensions follow a real CVN:
- *   length 337 m, waterline beam 41 m, draft 12.2 m, flight deck 78 m wide,
- *   flight deck 20 m above the waterline, displacement ~100 000 t.
- *
- * The same station data that builds the hull mesh also generates the
- * hydrostatic patch set used by the physics solver, so the floating body and
- * the visible body are guaranteed to be the same shape.
+/** USS Enterprise CVN-65, reconstructed from multi-angle reference photos.
+ * Shared hull loft drives the visible mesh, waterline foam and hydrostatic patches.
+ * All deck and island coordinates live in carrier-layout.js.
  */
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-
-export const SHIP = {
-  length: 337,
-  beamWater: 41,
-  draft: 12.2,
-  deckY: 20.0,          // flight deck surface above waterline
-  hullTopY: 18.2,
-  deckHalfWidth: 39,
-  mass: 1.0e8,          // kg  (~100 000 t)
-  gyradiusRoll: 20.5,   // m   -> roll period ~11 s
-  gyradiusPitch: 88,
-  gyradiusYaw: 88,
-};
-
+import { createHullLoft } from './hull-loft.js';
+import { buildPropulsion } from './propulsion.js';
+import { bakeStatic } from './mesh-bake.js';
+import { WeaponBattery } from './weapons.js';
+import { SHIP, LAYOUT, DECK_OUTLINE, LANDING_FRAME, CATAPULT_FRAMES, ARRESTING_WIRES, deckHalfWidth } from './carrier-layout.js';
+export { SHIP, deckHalfWidth } from './carrier-layout.js';
 const HALF_L = SHIP.length / 2;
 
-/* station table: t, halfBeam, keelDepth, shapeA, shapeB, flare
- * Real carriers have a long PARALLEL MIDBODY at full beam (not the smooth
- * continuous taper of a yacht), a fine entry at the bow, and only a slight
- * taper to the transom. */
-const STATIONS = [
-  [0.000, 18.6, 10.8, 3.0, 2.3, 0.00],
-  [0.045, 19.8, 11.6, 3.0, 2.4, 0.00],
-  [0.120, 20.5, 12.0, 3.0, 2.4, 0.00],
-  [0.300, 20.6, 12.2, 3.0, 2.4, 0.00],
-  [0.520, 20.6, 12.2, 3.0, 2.4, 0.00],
-  [0.660, 20.4, 12.1, 2.9, 2.4, 0.02],
-  [0.760, 19.8, 11.9, 2.8, 2.3, 0.05],
-  [0.840, 18.4, 11.2, 2.6, 2.2, 0.10],
-  [0.900, 16.2, 10.3, 2.4, 2.0, 0.16],
-  [0.945, 12.6,  8.9, 2.2, 1.8, 0.22],
-  [0.975,  8.2,  7.0, 2.0, 1.6, 0.24],
-  [0.993,  4.4,  5.0, 1.8, 1.4, 0.18],
-  [1.000,  1.6,  3.6, 1.6, 1.2, 0.06],
-];
+const loft=createHullLoft(SHIP);
+export const {buildMesh:buildHull,waterlineOutline,buildPatches}=loft;
+const hullPoint=loft.point;
 
-function lerpStations(t) {
-  const S = STATIONS;
-  let i = 0;
-  while (i < S.length - 2 && t > S[i + 1][0]) i++;
-  const a = S[i], b = S[i + 1];
-  const f = THREE.MathUtils.clamp((t - a[0]) / (b[0] - a[0]), 0, 1);
-  const e = f * f * (3 - 2 * f);           // smoothstep keeps the loft crease-free
-  return [
-    THREE.MathUtils.lerp(a[1], b[1], e),
-    THREE.MathUtils.lerp(a[2], b[2], e),
-    THREE.MathUtils.lerp(a[3], b[3], e),
-    THREE.MathUtils.lerp(a[4], b[4], e),
-    THREE.MathUtils.lerp(a[5], b[5], e),
-  ];
-}
-
-/**
- * Half-section of the hull at parameter u (0 = keel, 1 = deck edge).
- * Returns { y, halfW }.
- */
-function hullSection(t, u) {
-  const [hb, keel, sa, sb, flare] = lerpStations(t);
-  const top = SHIP.hullTopY;
-  const y = -keel + (top + keel) * u;
-  // w0 high -> hard bilge then near-vertical sides: a carrier's hull is a
-  // wall-sided box with rounded bilges, not a yacht's soft sections
-  const w0 = 0.34;
-  const shape = w0 + (1 - w0) * Math.pow(1 - Math.pow(1 - u, sa), 1 / sb);
-  const halfW = hb * shape * (1 + flare * u * u * u);
-  return { y, halfW };
-}
-
-function hullPoint(t, u, side, out = new THREE.Vector3()) {
-  const { y, halfW } = hullSection(t, u);
-  const x = -HALF_L + t * SHIP.length;
-  return out.set(x, y, side * halfW);
-}
-
-/* ------------------------------------------------------------------ *
- * Textures
- * ------------------------------------------------------------------ */
 function canvasTex(w, h, draw, opts = {}) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
@@ -117,7 +43,7 @@ function noiseOverlay(g, w, h, amount, size = 2) {
  *
  * This is what kills the "plastic" look: every flat surface (hull plating,
  * deck, island) gets micro-relief — panel edges, weld beads, pitting — that
- * catches the sun and breaks up the specular. Without it a 337 m hull reads
+ * catches the sun and breaks up the specular. Without it the hull reads
  * like a bathtub toy no matter how good the albedo texture is.
  *
  * @param {number} size     texture edge, power of two
@@ -190,8 +116,8 @@ function makeNormalTexture(size = 512, strength = 2.2, freq = 12, seed = 0) {
  */
 function makeHullTexture(mirror = false) {
   return canvasTex(2048, 320, (g, w, h) => {
-    // hull texture v = (y + 13) / 32, y in metres relative to the waterline
-    const py = (y) => h * (1 - (y + 13) / 32);
+    // hull texture v = (y + SHIP.draft + 1) / (SHIP.hullTopY + SHIP.draft + 2), y in metres relative to the waterline
+    const py = (y) => h * (1 - (y + SHIP.draft + 1) / (SHIP.hullTopY + SHIP.draft + 2));
     const flip = () => { if (mirror) g.scale(-1, 1); };
 
     // topside haze grey over everything
@@ -293,10 +219,10 @@ function makeHullTexture(mirror = false) {
     g.save();
     g.translate(w * 0.845, py(11));
     flip();
-    g.fillStyle = 'rgba(38,42,46,0.92)';
+    g.fillStyle = '#d8dcd4';
     g.font = 'bold 78px "Helvetica Neue", Arial, sans-serif';
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText('78', 0, 0);
+    g.fillText(SHIP.number, 0, 0);
     g.restore();
 
     // anchor hawse pipe
@@ -309,195 +235,7 @@ function makeHullTexture(mirror = false) {
   });
 }
 
-/** Flight deck: non-skid, runway, catapults, elevators, foul lines. */
-function makeDeckTexture() {
-  const W = 4096, H = 1024;
-  const X0 = -HALF_L, LEN = SHIP.length;
-  const Z0 = -44, ZW = 84;
-  const px = (x) => ((x - X0) / LEN) * W;
-  const sz = (m) => (m / ZW) * H;
-  const sx = (m) => (m / LEN) * W;
 
-  return canvasTex(W, H, (g, w, h) => {
-    // three flips the canvas, so v=0 (z = -44, port) is the BOTTOM row
-    const pz = (z) => h * (1 - (z - Z0) / ZW);
-    const rect = (x1, x2, z1, z2) => {
-      const a = px(x1), b = px(x2), c = pz(z1), d = pz(z2);
-      g.fillRect(Math.min(a, b), Math.min(c, d), Math.abs(b - a), Math.abs(d - c));
-    };
-
-    // ---- non-skid base -------------------------------------------
-    // Fine, low-contrast speckle: the earlier 3 px / 14 % dots aliased into
-    // a visible mosaic at grazing angles from the bridge. 2 px dots at
-    // lower alpha survive as texture without a pixel-grid read.
-    g.fillStyle = '#3a3e43';
-    g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 52000; i++) {
-      const a = Math.random() * 0.09;
-      g.fillStyle = Math.random() < 0.5
-        ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`;
-      g.fillRect(Math.random() * w, Math.random() * h, 2, 2);
-    }
-    // long, faint traffic streaks along the launch direction — breaks the
-    // uniformity of the non-skid at large scale without repeating
-    for (let i = 0; i < 26; i++) {
-      const y = Math.random() * h;
-      const grd = g.createLinearGradient(0, y, w, y + (Math.random() - 0.5) * 40);
-      grd.addColorStop(0, 'rgba(0,0,0,0)');
-      grd.addColorStop(0.5, `rgba(12,12,14,${0.05 + Math.random() * 0.06})`);
-      grd.addColorStop(1, 'rgba(0,0,0,0)');
-      g.fillStyle = grd;
-      g.fillRect(0, y - 3 + (Math.random() - 0.5) * 8, w, 5);
-    }
-    // deck plates
-    g.strokeStyle = 'rgba(18,20,23,0.55)';
-    g.lineWidth = 1.6;
-    for (let x = -168; x <= 169; x += 12) {
-      g.beginPath(); g.moveTo(px(x), 0); g.lineTo(px(x), h); g.stroke();
-    }
-    // scorch / tyre marks
-    for (let i = 0; i < 90; i++) {
-      const x = px(THREE.MathUtils.randFloat(-150, 150));
-      const y = pz(THREE.MathUtils.randFloat(-38, 36));
-      const r = Math.random() * 60 + 14;
-      const grd = g.createRadialGradient(x, y, 0, x, y, r);
-      grd.addColorStop(0, 'rgba(10,10,12,0.34)');
-      grd.addColorStop(1, 'rgba(10,10,12,0)');
-      g.fillStyle = grd;
-      g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
-    }
-
-    const line = (x1, z1, x2, z2, wm, color, dash = null, alpha = 0.9) => {
-      g.save();
-      g.globalAlpha = alpha;
-      g.strokeStyle = color;
-      g.lineWidth = Math.max(2, sz(wm));
-      if (dash) g.setLineDash(dash.map((d) => Math.max(3, sz(d))));
-      g.beginPath();
-      g.moveTo(px(x1), pz(z1));
-      g.lineTo(px(x2), pz(z2));
-      g.stroke();
-      g.restore();
-    };
-
-    // ---- landing area (angled deck, ~9 deg to port) ----------------
-    const LAND = { x1: -162, z1: -25, x2: 62, z2: -1 };
-    const ang = Math.atan2(LAND.z2 - LAND.z1, LAND.x2 - LAND.x1);
-    const halfRun = 15.5;
-    const nx = -Math.sin(ang) * halfRun, nz = Math.cos(ang) * halfRun;
-
-    g.save();
-    g.globalAlpha = 0.42;
-    g.fillStyle = '#2c3036';
-    g.beginPath();
-    g.moveTo(px(LAND.x1 + nx), pz(LAND.z1 + nz));
-    g.lineTo(px(LAND.x2 + nx), pz(LAND.z2 + nz));
-    g.lineTo(px(LAND.x2 - nx), pz(LAND.z2 - nz));
-    g.lineTo(px(LAND.x1 - nx), pz(LAND.z1 - nz));
-    g.closePath(); g.fill();
-    g.restore();
-
-    // foul lines
-    line(LAND.x1 + nx * 1.08, LAND.z1 + nz * 1.08,
-         LAND.x2 + nx * 1.08, LAND.z2 + nz * 1.08, 0.6, '#eef3f6', [7, 5], 0.85);
-    line(LAND.x1 - nx * 1.08, LAND.z1 - nz * 1.08,
-         LAND.x2 - nx * 1.08, LAND.z2 - nz * 1.08, 0.6, '#eef3f6', [7, 5], 0.6);
-
-    // runway centreline
-    line(LAND.x1, LAND.z1, LAND.x2, LAND.z2, 0.9, '#f4f8fa', [15, 10], 0.95);
-
-    // threshold bars at the aft end
-    g.save();
-    g.globalAlpha = 0.92;
-    g.strokeStyle = '#f4f8fa';
-    g.lineWidth = sz(1.6);
-    for (let i = -4; i <= 4; i++) {
-      const bx = LAND.x1 + 8 + nx * (i / 4.4);
-      const bz = LAND.z1 + 8 + nz * (i / 4.4);
-      g.beginPath();
-      g.moveTo(px(bx), pz(bz));
-      g.lineTo(px(bx + 9), pz(bz + 9 * Math.tan(ang)));
-      g.stroke();
-    }
-    g.restore();
-
-    // ---- catapult tracks -----------------------------------------
-    const cat = (x1, z1, x2, z2) => {
-      line(x1, z1, x2, z2, 1.1, '#c6cace', null, 0.6);
-      line(x1, z1 + 1.0, x2, z2 + 1.0, 1.3, '#17191c', null, 0.95);
-      line(x1, z1 - 1.0, x2, z2 - 1.0, 1.3, '#17191c', null, 0.95);
-      // jet blast deflector
-      g.save();
-      g.globalAlpha = 0.8;
-      g.fillStyle = '#575d63';
-      rect(x1 - 10, x1 - 3, z1 - 7, z1 + 7);
-      g.restore();
-    };
-    cat(96, -7.5, 166, -3.5);
-    cat(96, 7.5, 166, 3.5);
-    cat(-26, -16, 46, -10);
-    cat(-26, -28, 46, -22);
-
-    // ---- elevators: Ford layout — two starboard (fwd + aft of the
-    // island), one port. (The old Nimitz-style middle starboard one is gone.)
-    const elev = (x1, x2, z1, z2) => {
-      g.save();
-      g.globalAlpha = 0.92;
-      g.fillStyle = '#454a50';
-      rect(x1, x2, z1, z2);
-      g.globalAlpha = 1;
-      g.strokeStyle = '#f0c400';
-      g.lineWidth = Math.max(2, sz(0.8));
-      const a = px(x1), b = px(x2), c = pz(z1), d = pz(z2);
-      g.strokeRect(Math.min(a, b), Math.min(c, d), Math.abs(b - a), Math.abs(d - c));
-      g.restore();
-    };
-    elev(0, 20, 16, 30);
-    elev(-110, -90, 16, 30);
-    elev(-62, -42, -38, -26);
-
-    // ---- island footprint ----------------------------------------
-    g.save();
-    g.globalAlpha = 0.55;
-    g.fillStyle = '#20232a';
-    rect(29, 67, 19, 31);
-    g.restore();
-
-    // ---- parking spots -------------------------------------------
-    g.strokeStyle = 'rgba(238,240,242,0.34)';
-    g.lineWidth = Math.max(2, sz(0.4));
-    const spots = [
-      [96, 24], [96, 26], [80, 20], [80, 26],
-      [-50, 28], [-72, 28], [-94, 28],
-      [-52, 15], [-74, 15],
-      [42, -33], [20, -31],
-      [-118, 26], [-140, 26], [-142, 13],
-    ];
-    for (const [x, z] of spots) {
-      const a = px(x - 9), b = px(x + 9), c = pz(z - 6), d = pz(z + 6);
-      g.strokeRect(Math.min(a, b), Math.min(c, d), Math.abs(b - a), Math.abs(d - c));
-    }
-
-    // ---- deck edge line ------------------------------------------
-    g.save();
-    g.globalAlpha = 0.5;
-    g.strokeStyle = '#eef3f6';
-    g.lineWidth = Math.max(2, sz(0.55));
-    g.setLineDash([sz(3.4), sz(2.4)]);
-    g.strokeRect(sx(4), sz(4), w - sx(8), h - sz(8));
-    g.restore();
-
-    // ---- deck number ---------------------------------------------
-    g.save();
-    g.fillStyle = 'rgba(238,242,246,0.6)';
-    g.font = `bold ${sz(12)}px "Helvetica Neue", Arial, sans-serif`;
-    g.textAlign = 'center';
-    g.fillText('78', px(132), pz(25));
-    g.restore();
-  }, { aniso: 16 });
-}
-
-/** Safety-net grid texture (alpha-only pattern on colour). */
 function makeNetTexture() {
   return canvasTex(256, 64, (g, w, h) => {
     g.clearRect(0, 0, w, h);
@@ -513,1252 +251,7 @@ function makeNetTexture() {
   }, { wrap: true });
 }
 
-function makeIslandTexture() {
-  return canvasTex(1024, 512, (g, w, h) => {    // v=0 is the bottom of the face -> canvas bottom row
-    const py = (v) => h * (1 - v);
-    g.fillStyle = '#828990';
-    g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 500; i++) {
-      const x = Math.random() * w;
-      g.strokeStyle = `rgba(58,64,70,${Math.random() * 0.11})`;
-      g.lineWidth = Math.random() * 3 + 0.5;
-      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, Math.random() * h); g.stroke();
-    }
-    // bridge window band high on the face
-    g.fillStyle = '#101418';
-    g.fillRect(w * 0.05, py(0.80), w * 0.90, py(0.68) - py(0.80));
-    for (let i = 0; i < 26; i++) {
-      g.fillStyle = `rgba(44,68,92,${0.35 + Math.random() * 0.55})`;
-      g.fillRect(w * (0.062 + i * 0.0342), py(0.785), w * 0.022, py(0.70) - py(0.785));
-    }
-    // panel lines
-    g.strokeStyle = 'rgba(58,64,70,0.5)';
-    g.lineWidth = 1.4;
-    for (let i = 1; i < 12; i++) {
-      const y = (i / 12) * h;
-      g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
-    }
-    for (let i = 1; i < 20; i++) {
-      const x = (i / 20) * w;
-      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
-    }
-    // hull number on the island side
-    g.save();
-    g.translate(w * 0.5, py(0.42));
-    g.fillStyle = 'rgba(42,47,53,0.96)';
-    g.font = 'bold 132px "Helvetica Neue", Arial, sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText('78', 0, 0);
-    g.restore();
-    noiseOverlay(g, w, h, 13);
-  }, { aniso: 8 });
-}
 
-/* ------------------------------------------------------------------ *
- * Materials
- * ------------------------------------------------------------------ */
-function shipMaterials() {
-  const hullTex = makeHullTexture(false);
-  hullTex.wrapS = THREE.RepeatWrapping;
-  const hullTexPort = makeHullTexture(true);
-  hullTexPort.wrapS = THREE.RepeatWrapping;
-  const deckTex = makeDeckTexture();
-  const islandTex = makeIslandTexture();
-
-  // Procedural normal maps. Repeat counts are matched to real feature sizes:
-  // hull plating ~1.2 m, deck non-skid ~0.5 m, island panels ~0.8 m.
-  // The deck normal map is 1024² at a 6 m tile: the old 512² / 8.4 m tile
-  // repeated visibly from the bridge — the "mosaic deck" complaint.
-  const hullNrm = makeNormalTexture(512, 2.0, 14, 1);
-  hullNrm.repeat.set(26, 3);
-  const deckNrm = makeNormalTexture(1024, 2.6, 26, 2);
-  deckNrm.repeat.set(56, 14);
-  const islandNrm = makeNormalTexture(512, 1.8, 16, 3);
-  islandNrm.repeat.set(6, 3);
-  const steelNrm = makeNormalTexture(256, 1.4, 20, 4);
-  steelNrm.repeat.set(4, 4);
-
-  const std = (o) => {
-    // Haze Grey warship paint is a SEMI-GLOSS: flat-lit plastic was a big
-    // part of the "fake" look. envMapIntensity picks up the sky so hull
-    // sides and panel faces carry moving reflections at grazing angles.
-    // (Set AFTER construction: three's Material.set ignores unknown
-    // constructor keys like envInt, so the first version silently did
-    // nothing and every warning spam said so.)
-    const envInt = o.envInt ?? 1.0;
-    delete o.envInt;
-    const m = new THREE.MeshStandardMaterial(o);
-    m.envMapIntensity = envInt;
-    return m;
-  };
-
-  return {
-    hull: std({
-      map: hullTex, normalMap: hullNrm, normalScale: new THREE.Vector2(0.55, 0.55),
-      color: 0xffffff, roughness: 0.60, metalness: 0.32, envInt: 1.25,
-      side: THREE.DoubleSide,
-    }),
-    hullPort: std({
-      map: hullTexPort, normalMap: hullNrm, normalScale: new THREE.Vector2(0.55, 0.55),
-      color: 0xffffff, roughness: 0.60, metalness: 0.32, envInt: 1.25,
-      side: THREE.DoubleSide,
-    }),
-    deckTop: std({
-      map: deckTex, normalMap: deckNrm, normalScale: new THREE.Vector2(0.75, 0.75),
-      color: 0xffffff, roughness: 0.90, metalness: 0.14, envInt: 0.45,
-      // DoubleSide: from deck-level rigs the lens rides 1-2 m above the
-      // plane, and a few degrees of pitch puts the deck AHEAD below the
-      // sightline — a FrontSide top would backface-cull there and the view
-      // would see straight through the ship to the shadowed sea: a huge
-      // near-black flash. Seen from below, the deck must still be a deck.
-      side: THREE.DoubleSide,
-    }),
-    deckSide: std({
-      normalMap: steelNrm, normalScale: new THREE.Vector2(0.4, 0.4),
-      color: 0x6f767d, roughness: 0.58, metalness: 0.34, envInt: 1.0,
-    }),
-    island: std({
-      map: islandTex, normalMap: islandNrm, normalScale: new THREE.Vector2(0.5, 0.5),
-      color: 0xffffff, roughness: 0.60, metalness: 0.30, envInt: 1.15,
-    }),
-    grey: std({
-      normalMap: steelNrm, normalScale: new THREE.Vector2(0.35, 0.35),
-      color: 0x7d848b, roughness: 0.56, metalness: 0.38, envInt: 1.05,
-    }),
-    greyDark: std({
-      normalMap: steelNrm, normalScale: new THREE.Vector2(0.35, 0.35),
-      color: 0x4a5057, roughness: 0.52, metalness: 0.44, envInt: 1.05,
-    }),
-    black: std({ color: 0x1c1f22, roughness: 0.48, metalness: 0.4, envInt: 0.9 }),
-    white: std({ color: 0xd9dde0, roughness: 0.44, metalness: 0.1, envInt: 1.1 }),
-    glass: std({
-      color: 0x1a2a38, roughness: 0.08, metalness: 0.9,
-      transparent: true, opacity: 0.55, envInt: 1.6,
-    }),
-    jet: std({ color: 0x8a949c, roughness: 0.52, metalness: 0.42 }),
-    jetDark: std({ color: 0x555c64, roughness: 0.55, metalness: 0.45 }),
-    canopy: std({
-      color: 0x18242e, roughness: 0.06, metalness: 0.85,
-      transparent: true, opacity: 0.6,
-    }),
-    yellow: std({ color: 0xd9a800, roughness: 0.6, metalness: 0.25 }),
-    orange: std({ color: 0xe2661a, roughness: 0.75, metalness: 0.05 }),
-    steel: std({ color: 0x555b61, roughness: 0.42, metalness: 0.72, envInt: 1.2 }),
-    bronze: std({ color: 0x8a6a3a, roughness: 0.4, metalness: 0.8 }),
-  };
-}
-
-/* ------------------------------------------------------------------ *
- * Hull
- * ------------------------------------------------------------------ */
-function buildHull(matStar, matPort, stations = 96, ring = 22) {
-  const yToV = (y) => (y + 13) / 32;
-  const group = new THREE.Group();
-
-  for (const side of [1, -1]) {
-    const verts = [];
-    const uvs = [];
-    const idx = [];
-    for (let j = 0; j <= stations; j++) {
-      const t = j / stations;
-      for (let i = 0; i <= ring; i++) {
-        const p = hullPoint(t, i / ring, side);
-        verts.push(p.x, p.y, p.z);
-        uvs.push(t, yToV(p.y));
-      }
-    }
-    const stride = ring + 1;
-    for (let j = 0; j < stations; j++) {
-      for (let i = 0; i < ring; i++) {
-        const a = j * stride + i;
-        const b = a + 1;
-        const c = a + stride;
-        const d = c + 1;
-        if (side > 0) idx.push(a, c, b, b, c, d);
-        else idx.push(a, b, c, b, d, c);
-      }
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    g.setIndex(idx);
-    g.computeVertexNormals();
-    const m = new THREE.Mesh(g, side > 0 ? matStar : matPort);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    group.add(m);
-  }
-  return group;
-}
-
-/** Flat transom closing the stern. */
-function buildTransom(mat) {
-  const shape = new THREE.Shape();
-  const pts = [];
-  for (let i = 0; i <= 24; i++) {
-    const u = i / 24;
-    const p = hullPoint(0.001, u, 1);
-    pts.push([p.y, p.z]);
-  }
-  for (let i = 24; i >= 0; i--) {
-    const u = i / 24;
-    const p = hullPoint(0.001, u, -1);
-    pts.push([p.y, p.z]);
-  }
-  shape.moveTo(pts[0][1], pts[0][0]);
-  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][1], pts[i][0]);
-  shape.closePath();
-  const g = new THREE.ExtrudeGeometry(shape, { depth: 1.2, bevelEnabled: false });
-  g.rotateY(Math.PI / 2);
-  g.translate(-HALF_L - 1.2, 0, 0);
-  const m = new THREE.Mesh(g, mat);
-  m.castShadow = true; m.receiveShadow = true;
-  return m;
-}
-
-/** Bulbous bow. */
-function buildBulb(mat) {
-  const g = new THREE.SphereGeometry(1, 24, 16);
-  g.scale(15, 5.0, 4.2);
-  g.translate(HALF_L - 8, -6.6, 0);
-  const m = new THREE.Mesh(g, mat);
-  m.castShadow = true;
-  return m;
-}
-
-/* ------------------------------------------------------------------ *
- * Flight deck
- * ------------------------------------------------------------------ */
-/* Flight-deck outline, bow-first. This is the PLAN FORM, and it is what
- * makes a carrier a carrier:
- *   • the bow is a sharp wedge meeting near the centreline
- *   • the STARBOARD edge runs almost straight (catapult side) ~30-33 m off
- *     the centreline, with the elevators cut into it
- *   • the PORT side carries the angled landing deck: its diagonal edge is
- *     the widest part of the ship (~-42..-44) from midship aft, tapering
- *     forward to the bow — that asymmetric bulge is the single strongest
- *     "this is a carrier" silhouette from above
- *   • the stern is a broad transom with slightly angled corners
- * (First 15 entries are the starboard side, bow -> stern; the rest run the
- * port side stern -> bow — deckHalfWidth() and the net strips rely on it.) */
-const DECK_OUTLINE = [
-  // starboard: blunt bow face -> straight catapult-side edge -> stern
-  [172.5, 0], [171.5, 6], [169, 11], [164.5, 15.5], [157, 19.5], [145, 23.5],
-  [125, 27.5], [100, 30], [70, 31.5], [30, 32.5], [-30, 32.5], [-90, 32.5],
-  [-130, 33.5], [-155, 35], [-168, 36],
-  // port: transom corner -> angled-deck bulge -> diagonal to the bow face
-  [-168, -43], [-152, -43.5], [-118, -43.5], [-80, -43], [-40, -42],
-  [0, -40.5], [40, -38], [80, -35], [112, -30], [132, -25], [146, -19.5],
-  [157, -14], [164.5, -9], [169, -4.5], [171.5, -6],
-];
-
-function deckShape() {
-  const s = new THREE.Shape();
-  DECK_OUTLINE.forEach(([x, z], i) => {
-    if (i === 0) s.moveTo(x, z); else s.lineTo(x, z);
-  });
-  s.closePath();
-  return s;
-}
-
-/** Flight-deck half width at longitudinal position x, for the given side
- *  (+1 starboard / -1 port), by walking the outline polylines. Used to place
- *  gallery struts, safety nets, deck-edge fittings — and by the spray emitter
- *  so water is born OUTBOARD of the deck instead of clipping through it. */
-export function deckHalfWidth(x, side) {
-  const pts = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
-  for (let i = 0; i < pts.length - 1; i++) {
-    const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
-    if ((x1 >= x && x >= x2) || (x2 >= x && x >= x1)) {
-      const f = (x - x1) / ((x2 - x1) || 1);
-      return Math.abs(z1 + (z2 - z1) * f);
-    }
-  }
-  return 0;
-}
-
-/** The gallery band + diagonal struts under the flight-deck overhang. On a
- *  real carrier the 78 m deck hangs 8-12 m beyond the 41 m hull on both
- *  sides, carried on sponsons. The band is a VERTICAL outer wall following
- *  the full deck outline (from the deck slab's underside down ~2.6 m): an
- *  earlier version used a plate shrunk inboard from the outline, which left
- *  a see-through slot between it and the deck edge over the whole length —
- *  the "one side is missing" hole. A wall flush with the deck edge cannot
- *  open a gap. */
-function buildGallery(mats) {
-  const g = new THREE.Group();
-
-  // Vertical closing wall flush with the deck edge, 12.3 m tall: deck slab
-  // down to y ~ 5.9. With the bottom closure plate below, the overhang is a
-  // four-sided solid box — no see-through from ANY angle, 360 degrees.
-  const shape = deckShape();
-  const wallGeo = new THREE.ExtrudeGeometry(shape, { depth: 12.3, bevelEnabled: false });
-  wallGeo.rotateX(Math.PI / 2);
-  wallGeo.translate(0, SHIP.deckY - 1.86, 0);
-  const wall = new THREE.Mesh(wallGeo, mats.deckSide);
-  wall.castShadow = true; wall.receiveShadow = true;
-  g.add(wall);
-
-  // diagonal struts from the hull side up to the gallery band
-  for (const side of [1, -1]) {
-    for (let x = -150; x <= 150; x += 15) {
-      const t = (x + HALF_L) / SHIP.length;
-      if (t < 0.05 || t > 0.90) continue;
-      const [, keel] = lerpStations(t);
-      const u = THREE.MathUtils.clamp((11 + keel) / (SHIP.hullTopY + keel), 0, 1);
-      const { halfW } = hullSection(t, u);
-      const z0 = side * (halfW + 0.6), y0 = 11;
-      const z1 = side * (deckHalfWidth(x, side) - 0.4), y1 = SHIP.deckY - 6.6;
-      const dz = z1 - z0, dy = y1 - y0;
-      const L = Math.hypot(dz, dy);
-      const m = new THREE.Mesh(new THREE.BoxGeometry(1.0, L, 0.9), mats.greyDark);
-      m.position.set(x, (y0 + y1) / 2, (z0 + z1) / 2);
-      m.rotation.x = -Math.atan2(dz, dy);
-      m.castShadow = true; m.receiveShadow = true;
-      g.add(m);
-    }
-  }
-
-  // Two closures turn the overhang into a solid box, watertight to the eye
-  // from any of the 360 degrees:
-  //  - upper diaphragm: sloped plating from the hull's top edge out to the
-  //    band (the shadowed gallery ceiling)
-  //  - bottom plate: from the hull's side out to the band's lower edge, so
-  //    a low quarter view cannot see under the structure to the sea
-  {
-    const skirtMat = mats.deckSide.clone();
-    skirtMat.side = THREE.DoubleSide;
-    const closure = (yHull, yBand) => {
-      for (const side of [1, -1]) {
-        const outline = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
-        const verts = [], idx = [];
-        for (let i = 0; i < outline.length; i++) {
-          const [x, z] = outline[i];
-          const t = THREE.MathUtils.clamp((x + HALF_L) / SHIP.length, 0, 1);
-          const { halfW } = hullSection(t, 1);
-          verts.push(x, yHull, side * halfW);       // against the hull
-          verts.push(x, yBand, side * Math.abs(z)); // at the outer band
-        }
-        for (let i = 0; i < outline.length - 1; i++) {
-          const a0 = i * 2, b0 = i * 2 + 1, a1 = a0 + 2, b1 = b0 + 2;
-          idx.push(a0, b0, a1, b1, a1, b0);
-        }
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-        geo.setIndex(idx);
-        geo.computeVertexNormals();
-        const skirt = new THREE.Mesh(geo, skirtMat);
-        skirt.castShadow = true; skirt.receiveShadow = true;
-        g.add(skirt);
-      }
-    };
-    closure(17.4, SHIP.deckY - 6.6);   // upper gallery ceiling
-    closure(6.2, 5.9);                 // bottom plate of the overhang box
-  }
-
-  // sponson pods along the gallery band — weapon mounts, boat davit bases
-  for (const side of [1, -1]) {
-    for (const x of [-128, -84, -36, 16, 66, 112]) {
-      const z = side * (deckHalfWidth(x, side) - 1.6);
-      const m = new THREE.Mesh(new THREE.BoxGeometry(8, 1.5, 3.2), mats.grey);
-      m.position.set(x, SHIP.deckY - 2.2, z);
-      m.castShadow = true;
-      g.add(m);
-    }
-  }
-  return g;
-}
-
-function buildDeck(mats) {
-  const group = new THREE.Group();
-  const shape = deckShape();
-
-  // top surface with UVs derived from world x/z
-  const topGeo = new THREE.ShapeGeometry(shape, 24);
-  {
-    const pos = topGeo.attributes.position;
-    const uv = new Float32Array(pos.count * 2);
-    for (let i = 0; i < pos.count; i++) {
-      uv[i * 2] = (pos.getX(i) + HALF_L) / SHIP.length;
-      uv[i * 2 + 1] = (pos.getY(i) + 44) / 84;
-    }
-    topGeo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  }
-  topGeo.rotateX(Math.PI / 2);
-  topGeo.translate(0, SHIP.deckY, 0);
-  // ShapeGeometry winds CCW in its XY plane, so after rotateX(+90 deg) the
-  // face normal points -Y: the marking surface would be backface-culled when
-  // seen from above and you would just see the plain slab through it.
-  // Reverse the winding and rebuild the normals so the deck faces up.
-  {
-    const idx = topGeo.getIndex();
-    const a = idx.array;
-    for (let i = 0; i < a.length; i += 3) {
-      const t = a[i]; a[i] = a[i + 2]; a[i + 2] = t;
-    }
-    idx.needsUpdate = true;
-    topGeo.computeVertexNormals();
-  }
-  const top = new THREE.Mesh(topGeo, mats.deckTop);
-  top.receiveShadow = true;
-  group.add(top);
-
-  // slab thickness + underside. Its top cap is dropped 6 cm below the marking
-  // surface: coplanar caps z-fight and the plain slab wins, which silently
-  // erases every runway marking.
-  const slabGeo = new THREE.ExtrudeGeometry(shape, { depth: 1.8, bevelEnabled: false });
-  slabGeo.rotateX(Math.PI / 2);
-  slabGeo.translate(0, SHIP.deckY - 0.06, 0);
-  const slab = new THREE.Mesh(slabGeo, mats.deckSide);
-  slab.castShadow = true; slab.receiveShadow = true;
-  group.add(slab);
-
-  // gallery deck + struts under the overhang (replaces the old single
-  // support box, which read as a rectangular barge under the deck)
-  group.add(buildGallery(mats));
-
-  // jet blast deflectors, raised, behind catapults 1 & 2
-  for (const zOff of [-7.5, 7.5]) {
-    const jbd = new THREE.Mesh(new THREE.BoxGeometry(9, 0.5, 10), mats.greyDark);
-    jbd.position.set(88, SHIP.deckY + 3.1, zOff);
-    jbd.rotation.set(-Math.PI / 3.1, 0, 0);
-    jbd.castShadow = true;
-    group.add(jbd);
-  }
-
-  // deck-edge safety nets: a grid texture on hanging strips, following the
-  // real outline (the old fixed stanchion row floated off the deck edge)
-  const netTex = makeNetTexture();
-  for (const side of [1, -1]) {
-    const pts = side > 0 ? DECK_OUTLINE.slice(0, 15) : DECK_OUTLINE.slice(14);
-    for (let i = 0; i < pts.length - 1; i++) {
-      const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
-      const len = Math.hypot(x2 - x1, z2 - z1);
-      if (len < 4) continue;
-      const m = new THREE.Mesh(
-        new THREE.PlaneGeometry(len, 1.6),
-        new THREE.MeshStandardMaterial({
-          map: netTex, transparent: true, side: THREE.DoubleSide,
-          color: 0x39424b, roughness: 0.9, metalness: 0.1, depthWrite: false,
-        }));
-      m.position.set((x1 + x2) / 2, SHIP.deckY - 0.95, (z1 + z2) / 2 - side * 0.9);
-      m.rotation.y = -Math.atan2(z2 - z1, x2 - x1);
-      m.rotation.x = -Math.PI / 2;
-      group.add(m);
-    }
-  }
-
-  // deck edge catwalk
-  const catwalk = new THREE.Group();
-  const mkEdge = (pts) => {
-    for (let i = 0; i < pts.length - 1; i++) {
-      const [x1, z1] = pts[i], [x2, z2] = pts[i + 1];
-      const dx = x2 - x1, dz = z2 - z1;
-      const len = Math.hypot(dx, dz);
-      const b = new THREE.Mesh(new THREE.BoxGeometry(len, 0.25, 1.3), mats.greyDark);
-      b.position.set((x1 + x2) / 2, SHIP.deckY - 0.55, (z1 + z2) / 2);
-      b.rotation.y = -Math.atan2(dz, dx);
-      catwalk.add(b);
-    }
-  };
-  mkEdge(DECK_OUTLINE.slice(0, 15));
-  mkEdge(DECK_OUTLINE.slice(15).concat([DECK_OUTLINE[0]]));
-  catwalk.traverse((o) => { o.castShadow = true; });
-  group.add(catwalk);
-
-  return group;
-}
-
-/* ------------------------------------------------------------------ *
- * Island (superstructure) — Ford-class style
- *
- * Footprint x 31..65, z 26..36 (compact, ~2/3 aft of the bow like the
- * real thing). Stepped tower, flat phased-array panels, an OPEN nav-bridge
- * house (floor / roof / side+rear walls, window band + mullions at the
- * front) so the bridge camera actually sees over the bow, bridge wings,
- * one box mast with two yardarms, and the rotating EASR panel on top.
- * ------------------------------------------------------------------ */
-function buildIsland(mats) {
-  const g = new THREE.Group();
-  const Y0 = SHIP.deckY;
-  const CX = 48, CZ = 25;
-  const add = (geo, mat, x, y, z, ry = 0) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z);
-    m.rotation.y = ry;
-    m.castShadow = true; m.receiveShadow = true;
-    g.add(m);
-    return m;
-  };
-
-  // base gallery + life-raft canister rows
-  add(new THREE.BoxGeometry(36, 1.6, 12), mats.greyDark, CX, Y0 + 0.8, CZ);
-  const raftGeo = new THREE.CylinderGeometry(0.42, 0.42, 1.9, 10);
-  for (let x = 33.5; x <= 62.5; x += 3.6) {
-    for (const dz of [-5.5, 5.5]) {
-      add(raftGeo, mats.white, x, Y0 + 1.95, CZ + dz, 0, Math.PI / 2);
-    }
-  }
-
-  // main tower (stepped, slab-sided)
-  add(new THREE.BoxGeometry(30, 11, 9), mats.island, CX, Y0 + 7.1, CZ);
-  // flat phased-array sensor panels on both faces, slightly canted
-  for (const [px, py] of [[42, Y0 + 7], [54, Y0 + 7]]) {
-    add(new THREE.BoxGeometry(7, 7, 0.4), mats.greyDark, px, py, CZ + 4.55, 0.05);
-    add(new THREE.BoxGeometry(7, 7, 0.4), mats.greyDark, px, py, CZ - 4.55, -0.05);
-  }
-
-  // flag bridge with window band
-  add(new THREE.BoxGeometry(26, 3.6, 8.4), mats.island, CX, Y0 + 14.4, CZ);
-  add(new THREE.BoxGeometry(24, 1.4, 8.8), mats.glass, CX, Y0 + 14.9, CZ);
-
-  // ---- nav bridge house: OPEN front, so the bridge view sees the bow ----
-  add(new THREE.BoxGeometry(22, 0.5, 10), mats.island, CX, Y0 + 16.45, CZ);   // floor
-  add(new THREE.BoxGeometry(23, 0.6, 10.6), mats.island, CX, Y0 + 20.7, CZ);  // roof
-  add(new THREE.BoxGeometry(21.4, 3.4, 0.5), mats.island, CX, Y0 + 18.3, CZ + 4.85); // walls
-  add(new THREE.BoxGeometry(21.4, 3.4, 0.5), mats.island, CX, Y0 + 18.3, CZ - 4.85);
-  add(new THREE.BoxGeometry(0.5, 3.4, 10), mats.island, CX - 10.9, Y0 + 18.3, CZ);   // rear
-  add(new THREE.BoxGeometry(0.5, 1.2, 22), mats.island, CX + 10.9, Y0 + 17.3, CZ);   // sill
-  add(new THREE.BoxGeometry(0.5, 1.2, 22), mats.island, CX + 10.9, Y0 + 19.8, CZ);   // header
-  add(new THREE.BoxGeometry(0.14, 2.0, 21.4), mats.glass, CX + 10.9, Y0 + 18.65, CZ);
-  for (const mz of [CZ - 3, CZ + 3]) {                                          // mullions
-    add(new THREE.BoxGeometry(0.3, 2.0, 0.3), mats.greyDark, CX + 10.9, Y0 + 18.65, mz);
-  }
-
-  // bridge wings: grated platforms out beyond the house walls
-  for (const dz of [-6.6, 6.6]) {
-    add(new THREE.BoxGeometry(9, 0.35, 3.2), mats.grey, CX, Y0 + 16.7, CZ + dz);
-    for (const rx of [-4, 0, 4]) {
-      add(new THREE.CylinderGeometry(0.05, 0.05, 1.05, 5), mats.greyDark,
-        CX + rx, Y0 + 17.4, CZ + dz + (dz > 0 ? 1.4 : -1.4));
-    }
-    add(new THREE.BoxGeometry(9, 0.08, 0.08), mats.greyDark,
-      CX, Y0 + 17.9, CZ + dz + (dz > 0 ? 1.4 : -1.4));
-  }
-
-  // exterior walkways with railings at the flag-bridge and nav-bridge
-  // levels — crews stand on these; a blank-walled tower reads as a mausoleum
-  const walkway = (y, w, d) => {
-    const ledge = new THREE.Mesh(new THREE.BoxGeometry(w, 0.22, d), mats.grey);
-    ledge.position.set(CX, y, CZ);
-    ledge.castShadow = true; ledge.receiveShadow = true;
-    g.add(ledge);
-    const hw = w / 2 - 0.2, hd = d / 2 - 0.2;
-    const post = [];
-    for (let px = -hw; px <= hw; px += 2.6) {
-      post.push([CX + px, y + 0.55, CZ + hd], [CX + px, y + 0.55, CZ - hd]);
-    }
-    for (let pz = -hd + 2.6; pz <= hd - 2.6; pz += 2.6) {
-      post.push([CX - hw, y + 0.55, CZ + pz], [CX + hw, y + 0.55, CZ + pz]);
-    }
-    for (const [px, py, pz] of post) {
-      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.0, 5), mats.greyDark);
-      p.position.set(px, py, pz);
-      g.add(p);
-    }
-    const railW = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, 0.06), mats.greyDark);
-    railW.position.set(CX, y + 1.05, CZ + hd);
-    g.add(railW);
-    const railW2 = railW.clone(); railW2.position.z = CZ - hd; g.add(railW2);
-    const railS = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, d), mats.greyDark);
-    railS.position.set(CX - hw, y + 1.05, CZ);
-    g.add(railS);
-    const railS2 = railS.clone(); railS2.position.x = CX + hw; g.add(railS2);
-  };
-  walkway(Y0 + 16.85, 28, 10.6);    // flag-bridge gallery
-  walkway(Y0 + 21.0, 24.5, 11.2);   // nav-bridge gallery
-
-  // PriFly / air-traffic house above
-  add(new THREE.BoxGeometry(16, 2.8, 8), mats.island, CX + 2, Y0 + 22.4, CZ);
-  add(new THREE.BoxGeometry(14, 1.1, 8.4), mats.glass, CX + 2, Y0 + 22.6, CZ);
-
-  // box mast: column, two yardarms, dome, whips
-  add(new THREE.BoxGeometry(1.8, 10, 1.4), mats.grey, CX, Y0 + 28.6, CZ);
-  add(new THREE.BoxGeometry(7, 0.25, 0.25), mats.greyDark, CX, Y0 + 26.6, CZ);
-  add(new THREE.BoxGeometry(5, 0.25, 0.25), mats.greyDark, CX, Y0 + 29.4, CZ);
-  add(new THREE.SphereGeometry(1.4, 12, 10), mats.white, CX, Y0 + 34.4, CZ);
-  for (const wx of [-0.6, 0.6]) {
-    add(new THREE.CylinderGeometry(0.05, 0.08, 6, 5), mats.greyDark,
-      CX + wx, Y0 + 37, CZ, wx * 0.06);
-  }
-  // guy-wire stays from the masthead down to the roof — a stayed mast is
-  // structural honesty you can see
-  {
-    const top = new THREE.Vector3(CX, Y0 + 33.6, CZ);
-    const anchor = new THREE.Vector3();
-    const up = new THREE.Vector3(0, 1, 0);
-    const dir = new THREE.Vector3();
-    const stay = (ax, ay, az) => {
-      anchor.set(ax, ay, az);
-      dir.copy(anchor).sub(top);
-      const L = dir.length();
-      const s = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, L, 5), mats.greyDark);
-      s.position.copy(top).addScaledVector(dir, 0.5);
-      s.quaternion.setFromUnitVectors(up, dir.normalize());
-      g.add(s);
-    };
-    stay(CX - 8, Y0 + 21.2, CZ - 4);
-    stay(CX + 8, Y0 + 21.2, CZ - 4);
-    stay(CX, Y0 + 21.2, CZ + 4.4);
-  }
-
-  // rotating EASR panel (the only moving part — kept out of the static bake)
-  const spin = new THREE.Group();
-  add(new THREE.CylinderGeometry(0.4, 0.55, 1.2, 10), mats.greyDark, CX - 4, Y0 + 24.3, CZ);
-  const dish = new THREE.Mesh(new THREE.BoxGeometry(5.5, 3.2, 0.4), mats.greyDark);
-  spin.add(dish);
-  spin.position.set(CX - 4, Y0 + 26, CZ);
-  spin.userData.dynamic = true;   // rotates every frame; keep out of the bake
-  g.add(spin);
-  g.userData.spin = spin;
-
-  return g;
-}
-
-/* ------------------------------------------------------------------ *
- * Air wing
- * ------------------------------------------------------------------ */
-/**
- * F/A-18E/F Super Hornet, built up from lofted sections rather than stacked
- * primitives so the silhouette actually reads as a Hornet: the wide LEX
- * strakes, the rectangular box intakes under the wing roots, the canted twin
- * tails and the slab-sided fuselage are what make it recognisable at the
- * scale it is drawn (a 18 m aircraft on a 337 m deck).
- */
-function buildHornet(mats) {
-  const g = new THREE.Group();
-  const add = (geo, mat, x, y, z) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z);
-    m.castShadow = true;
-    g.add(m);
-    return m;
-  };
-
-  // ---- fuselage: lofted from station radii so it tapers properly ------
-  // (a single cylinder reads as a flying pencil; the Hornet has a deep,
-  //  slab-sided forward body and a fat engine bay aft)
-  const fuseStations = [
-    // [z, halfWidth, halfHeight, yCentre]
-    [-7.4, 0.62, 0.60, 1.85],
-    [-6.2, 0.78, 0.74, 1.85],
-    [-4.0, 0.86, 0.82, 1.88],
-    [-1.5, 0.92, 0.86, 1.90],
-    [ 1.0, 0.90, 0.84, 1.92],
-    [ 3.0, 0.80, 0.76, 1.92],
-    [ 5.0, 0.62, 0.60, 1.90],
-    [ 6.6, 0.42, 0.42, 1.88],
-    [ 8.2, 0.20, 0.20, 1.86],
-  ];
-  {
-    const verts = [], uvs = [], idx = [];
-    const RING = 12;
-    for (let s = 0; s < fuseStations.length; s++) {
-      const [z, hw, hh, yc] = fuseStations[s];
-      for (let i = 0; i <= RING; i++) {
-        const a = (i / RING) * Math.PI * 2;
-        // super-ellipse: squarer than a circle, like the real slab body
-        const ca = Math.cos(a), sa = Math.sin(a);
-        const p = 2.6;
-        const x = Math.sign(ca) * Math.pow(Math.abs(ca), 2 / p) * hw;
-        const y = Math.sign(sa) * Math.pow(Math.abs(sa), 2 / p) * hh;
-        verts.push(x, yc + y, z);
-        uvs.push(i / RING, s / (fuseStations.length - 1));
-      }
-    }
-    const stride = RING + 1;
-    for (let s = 0; s < fuseStations.length - 1; s++) {
-      for (let i = 0; i < RING; i++) {
-        const a = s * stride + i, b = a + 1, c = a + stride, d = c + 1;
-        idx.push(a, c, b, b, c, d);
-      }
-    }
-    const fg = new THREE.BufferGeometry();
-    fg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    fg.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    fg.setIndex(idx);
-    fg.computeVertexNormals();
-    const fuse = new THREE.Mesh(fg, mats.jet);
-    fuse.castShadow = true;
-    g.add(fuse);
-  }
-
-  // ---- radome / nose cone -------------------------------------------
-  const nose = add(new THREE.ConeGeometry(0.42, 2.4, 12), mats.jetDark, 0, 1.86, 8.9);
-  nose.rotation.set(Math.PI / 2, 0, 0);
-
-  // ---- canopy: teardrop, faired into the spine -----------------------
-  const can = add(new THREE.SphereGeometry(0.72, 14, 10), mats.canopy, 0, 2.62, 2.7);
-  can.scale.set(1.0, 0.68, 2.3);
-  // windscreen frame
-  add(new THREE.BoxGeometry(0.9, 0.10, 1.2), mats.jetDark, 0, 2.28, 4.4);
-
-  // ---- LEX (leading-edge extensions) — the Hornet's signature --------
-  for (const s of [1, -1]) {
-    const lex = new THREE.Shape();
-    lex.moveTo(0, 0);
-    lex.lineTo(2.9, -1.5);       // outboard
-    lex.lineTo(3.1, 0.5);        // trailing edge
-    lex.lineTo(0, 1.6);          // back to the fuselage
-    lex.closePath();
-    const lg = new THREE.ExtrudeGeometry(lex, { depth: 0.16, bevelEnabled: false });
-    lg.rotateX(Math.PI / 2);
-    const m = new THREE.Mesh(lg, mats.jet);
-    m.position.set(s * 0.75, 1.62, 0.4);
-    if (s < 0) m.scale.z = -1;
-    m.castShadow = true;
-    g.add(m);
-  }
-
-  // ---- box intakes under the wing roots -----------------------------
-  for (const s of [1, -1]) {
-    add(new THREE.BoxGeometry(0.30, 0.62, 1.5), mats.jetDark, s * 0.95, 1.55, 1.6);
-    // intake lip shadow
-    add(new THREE.BoxGeometry(0.12, 0.52, 0.16), mats.black, s * 1.12, 1.55, 2.35);
-  }
-
-  // ---- main wing: swept, with true trailing-edge kink ---------------
-  const wing = new THREE.Shape();
-  wing.moveTo(0, 0.0);
-  wing.lineTo(2.2, -0.6);        // inboard leading edge, swept back
-  wing.lineTo(6.4, -2.5);        // leading edge sweep to the tip
-  wing.lineTo(6.5, -1.75);       // tip chord
-  wing.lineTo(2.6, 1.15);        // trailing edge kink (flap / aileron break)
-  wing.lineTo(0, 1.45);          // root trailing edge
-  wing.closePath();
-  const wg = new THREE.ExtrudeGeometry(wing, { depth: 0.22, bevelEnabled: false });
-  wg.rotateX(Math.PI / 2);
-  for (const s of [1, -1]) {
-    const w = new THREE.Mesh(wg, mats.jet);
-    w.position.set(s * 0.9, 1.72, -0.9);
-    if (s < 0) w.scale.x = -1;
-    w.castShadow = true;
-    g.add(w);
-    // wingtip missile rail (AIM-9)
-    add(new THREE.CylinderGeometry(0.09, 0.09, 1.5, 8), mats.white,
-        s * 7.0, 1.80, -2.1).rotation.set(Math.PI / 2, 0, 0);
-    add(new THREE.CylinderGeometry(0.13, 0.13, 0.5, 8), mats.greyDark,
-        s * 7.0, 1.80, -2.9).rotation.set(Math.PI / 2, 0, 0);
-  }
-
-  // ---- canted twin tails -------------------------------------------
-  for (const s of [1, -1]) {
-    const t = add(new THREE.BoxGeometry(0.20, 3.3, 2.1), mats.jet, s * 1.35, 3.25, -4.6);
-    t.rotation.z = -s * 0.36;      // the real cant is ~20 deg outboard
-    t.rotation.x = 0.06;
-  }
-
-  // ---- all-moving stabilators --------------------------------------
-  for (const s of [1, -1]) {
-    const st = new THREE.Shape();
-    st.moveTo(0, 0); st.lineTo(3.3, -1.1);
-    st.lineTo(3.4, -0.45); st.lineTo(0, 1.0);
-    st.closePath();
-    const sg = new THREE.ExtrudeGeometry(st, { depth: 0.16, bevelEnabled: false });
-    sg.rotateX(Math.PI / 2);
-    const m = new THREE.Mesh(sg, mats.jet);
-    m.position.set(s * 0.85, 1.95, -6.0);
-    if (s < 0) m.scale.x = -1;
-    m.castShadow = true;
-    g.add(m);
-  }
-
-  // ---- engine bay + nozzles ----------------------------------------
-  add(new THREE.BoxGeometry(1.9, 1.25, 1.3), mats.jetDark, 0, 1.85, -6.9);
-  for (const s of [1, -1]) {
-    add(new THREE.CylinderGeometry(0.52, 0.60, 0.9, 12), mats.jetDark, s * 0.95, 1.85, -7.6)
-      .rotation.set(Math.PI / 2, 0, 0);
-    add(new THREE.CylinderGeometry(0.44, 0.52, 0.35, 12), mats.black, s * 0.95, 1.85, -8.1)
-      .rotation.set(Math.PI / 2, 0, 0);
-  }
-
-  // ---- fuselage spine / arrestor hook -------------------------------
-  add(new THREE.BoxGeometry(0.34, 0.30, 3.4), mats.jet, 0, 2.62, -1.2);
-  add(new THREE.BoxGeometry(0.10, 0.7, 0.10), mats.steel, 0, 1.5, -7.2)
-    .rotation.x = 0.5;
-
-  // ---- drop tanks on the inboard pylons ----------------------------
-  for (const s of [1, -1]) {
-    add(new THREE.CylinderGeometry(0.40, 0.40, 3.4, 10), mats.jetDark, s * 2.6, 1.15, -0.6)
-      .rotation.set(Math.PI / 2, 0, 0);
-    add(new THREE.ConeGeometry(0.40, 0.7, 10), mats.jetDark, s * 2.6, 1.15, 1.4)
-      .rotation.set(Math.PI / 2, 0, 0);
-    // pylon
-    add(new THREE.BoxGeometry(0.16, 0.5, 0.9), mats.jetDark, s * 2.6, 1.45, -0.6);
-  }
-
-  // ---- landing gear -------------------------------------------------
-  for (const [x, z, r] of [[0, 5.6, 0.13], [1.5, -1.0, 0.11], [-1.5, -1.0, 0.11]]) {
-    add(new THREE.CylinderGeometry(r, r, 1.7, 6), mats.steel, x, 0.85, z);
-    add(new THREE.CylinderGeometry(r * 1.7, r * 1.7, r * 2.2, 8), mats.black, x, 0.12, z)
-      .rotation.z = Math.PI / 2;
-  }
-  return g;
-}
-
-function buildHawkeye(mats) {
-  const g = buildHornet(mats);
-  const radome = new THREE.Mesh(new THREE.CylinderGeometry(4.0, 4.0, 0.7, 20), mats.grey);
-  radome.position.set(0, 4.6, -0.6);
-  radome.castShadow = true;
-  g.add(radome);
-  const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2.0, 1.6), mats.jet);
-  pylon.position.set(0, 3.5, -0.6);
-  g.add(pylon);
-  return g;
-}
-
-function buildHelo(mats) {
-  const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(1.1, 5.5, 8, 12), mats.grey);
-  body.rotation.z = Math.PI / 2;
-  body.position.y = 2.4;
-  body.castShadow = true;
-  g.add(body);
-  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.18, 5.5, 8), mats.grey);
-  tail.rotation.z = Math.PI / 2;
-  tail.position.set(-5.2, 3.2, 0);
-  g.add(tail);
-  const rotor = new THREE.Mesh(new THREE.BoxGeometry(13, 0.12, 0.55), mats.greyDark);
-  rotor.position.y = 4.3;
-  g.add(rotor);
-  const fin = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.18), mats.grey);
-  fin.position.set(-7.4, 4.0, 0);
-  g.add(fin);
-  return g;
-}
-
-/* ------------------------------------------------------------------ *
- * Deck clutter
- * ------------------------------------------------------------------ */
-function buildDetails(mats) {
-  const g = new THREE.Group();
-  const add = (geo, mat, x, y, z, ry = 0) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z);
-    m.rotation.y = ry;
-    m.castShadow = true;
-    g.add(m);
-    return m;
-  };
-
-  // ---- Phalanx CIWS -------------------------------------------------
-  // Base pedestal -> yaw ring -> drum housing (search-radar dish inside the
-  // white radome on top) -> the 20 mm Gatling cluster: six barrels in a
-  // ring, muzzle clamp, ammunition drum aft. The barrel cluster is what
-  // reads as "gun" from any distance, so it gets real geometry.
-  const ciws = (x, z, ry) => {
-    const b = new THREE.Group();
-    const mk = (geo, mat, y, z = 0, rx = 0) => {
-      const m = new THREE.Mesh(geo, mat);
-      m.position.set(0, y, z);
-      m.rotation.x = rx;
-      m.castShadow = true;
-      b.add(m);
-      return m;
-    };
-    // pedestal + trainable yaw ring
-    mk(new THREE.CylinderGeometry(1.05, 1.35, 1.1, 14), mats.greyDark, 0.55);
-    mk(new THREE.CylinderGeometry(0.95, 0.95, 0.5, 14), mats.steel, 1.35);
-    // drum housing (the gun's body), pitched with the mount
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.05, 2.6, 14), mats.white);
-    body.position.set(0, 2.55, 0.25);
-    body.rotation.x = Math.PI / 2 - 0.22;
-    body.castShadow = true;
-    b.add(body);
-    // ammo drum aft of the housing
-    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.9, 12), mats.white);
-    drum.position.set(0, 2.45, -1.35);
-    drum.rotation.x = Math.PI / 2 - 0.22;
-    drum.castShadow = true;
-    b.add(drum);
-    // white search-radar radome above the muzzle end
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.72, 14, 12), mats.white);
-    dome.position.set(0, 3.35, 0.95);
-    dome.castShadow = true;
-    b.add(dome);
-    // six-barrel Gatling cluster
-    const barrels = new THREE.Group();
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const bar = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.075, 0.075, 2.3, 8), mats.black);
-      bar.position.set(Math.cos(a) * 0.30, Math.sin(a) * 0.30, -1.15);
-      bar.rotation.x = Math.PI / 2;
-      barrels.add(bar);
-    }
-    const clamp = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.3, 12), mats.greyDark);
-    clamp.rotation.x = Math.PI / 2;
-    clamp.position.z = -2.2;
-    barrels.add(clamp);
-    const cluster = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.44, 0.5, 12), mats.greyDark);
-    cluster.rotation.x = Math.PI / 2;
-    barrels.add(cluster);
-    barrels.position.set(0, 2.55, 1.65);
-    barrels.rotation.x = -0.22;
-    barrels.traverse((o) => { o.castShadow = true; });
-    b.add(barrels);
-
-    b.position.set(x, SHIP.deckY, z);
-    b.rotation.y = ry;
-    g.add(b);
-  };
-  ciws(146, -17.5, -0.3);
-  ciws(146, 18, 0.3);
-  ciws(-158, 31, Math.PI);
-
-  // ---- MK-29 ESSM launchers ------------------------------------------
-  // Trainable pedestal under a box of eight launch tubes; the tube mouths
-  // are dark cylinders inset in the box face, which is what makes it read
-  // as a launcher instead of a shed.
-  const essm = (x, z, ry) => {
-    const b = new THREE.Group();
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.3, 1.2, 12), mats.greyDark);
-    base.position.y = 0.6; base.castShadow = true;
-    b.add(base);
-    const box = new THREE.Mesh(new THREE.BoxGeometry(4.4, 1.7, 2.5), mats.grey);
-    box.position.y = 2.4;
-    box.rotation.x = -0.55;
-    box.castShadow = true;
-    b.add(box);
-    for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) {
-      const mouth = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.24, 0.24, 0.3, 10), mats.black);
-      mouth.position.set(-1.6 + i * 1.05, 2.4 + (j - 0.5) * 0.78 + 0.95, 1.05);
-      mouth.rotation.x = Math.PI / 2 - 0.55;
-      b.add(mouth);
-      const rim = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.30, 0.30, 0.1, 10), mats.greyDark);
-      rim.position.copy(mouth.position);
-      rim.position.z -= 0.13;
-      rim.rotation.x = Math.PI / 2 - 0.55;
-      b.add(rim);
-    }
-    b.position.set(x, SHIP.deckY, z);
-    b.rotation.y = ry;
-    g.add(b);
-  };
-  essm(136, -19, -0.4);
-  essm(136, 19, 0.4);
-
-  // deck tractors
-  const tractor = (x, z, ry) => {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.6, 2.0), mats.yellow);
-    b.position.set(x, SHIP.deckY + 0.9, z);
-    b.rotation.y = ry; b.castShadow = true;
-    g.add(b);
-    const c = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.3, 1.8), mats.yellow);
-    c.position.set(x + Math.cos(ry) * 0.6, SHIP.deckY + 2.2, z - Math.sin(ry) * 0.6);
-    c.rotation.y = ry; g.add(c);
-  };
-  tractor(84, 26, 0.2); tractor(-46, 34, 1.6); tractor(-100, 30, 0.4);
-  tractor(30, -34, -0.3); tractor(-130, 30, 0.9);
-
-  // RIB boats stowed on the starboard sponsor, inboard of the deck edge
-  for (const [x, z] of [[-20, 34], [-31, 34]]) {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(7, 1.6, 2.6), mats.orange);
-    b.position.set(x, SHIP.deckY + 0.9, z);
-    b.castShadow = true;
-    g.add(b);
-  }
-
-  // aircraft crane
-  add(new THREE.CylinderGeometry(0.35, 0.4, 8, 8), mats.grey, -150, SHIP.deckY + 4, -30);
-  // crane jib
-  add(new THREE.BoxGeometry(9, 0.3, 0.3), mats.grey, -146, SHIP.deckY + 7.9, -30);
-
-  // ---- deck-edge antenna farm (the clutter that makes it read as real) --
-  // NB positions respect deckHalfWidth(): an antenna placed past the outline
-  // floats in mid-air beside the ship.
-  const whip = (x, z, h, ry = 0) => {
-    add(new THREE.CylinderGeometry(0.06, 0.09, h, 5), mats.greyDark,
-        x, SHIP.deckY + h / 2, z).rotation.z = ry;
-  };
-  for (const [x, z] of [[118, 24], [108, 24], [-80, 28], [-90, 28],
-                        [-30, -40], [60, -31], [138, 20], [-140, 29]]) {
-    whip(x, z, 3.2 + Math.random() * 2.6, (Math.random() - 0.5) * 0.25);
-  }
-  // radome / communication domes
-  for (const [x, z, r] of [[-60, 28, 1.1], [70, -31, 0.9], [-120, 29, 1.3]]) {
-    const d = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 8), mats.white);
-    d.position.set(x, SHIP.deckY + r, z);
-    d.castShadow = true;
-    g.add(d);
-  }
-
-  // ---- vents / ducting along the deck edge ---------------------------
-  for (const [x, z, w] of [[-10, -38, 14], [30, -36, 12], [90, -30, 10]]) {
-    add(new THREE.BoxGeometry(w, 1.0, 1.6), mats.greyDark, x, SHIP.deckY + 0.5, z);
-  }
-
-  // ---- IFLOLS ("the meatball"): the optical landing aid on the port deck
-  // edge — a light box on legs that pilots line up on. Nothing says "working
-  // carrier" to a carrier fan like this little box.
-  {
-    const z = -deckHalfWidth(-138, -1) + 2.5;
-    for (const dz of [-1.4, 1.4]) {
-      add(new THREE.CylinderGeometry(0.12, 0.12, 3.4, 6), mats.greyDark,
-        -138, SHIP.deckY + 1.7, z + dz);
-    }
-    add(new THREE.BoxGeometry(3.6, 2.2, 1.1), mats.grey, -138, SHIP.deckY + 4.6, z);
-    // the yellow-lit face toward the approach (aft)
-    const face = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.4, 0.12),
-      new THREE.MeshStandardMaterial({
-        color: 0xffd23e, emissive: 0x996f00, roughness: 0.4,
-      }));
-    face.position.set(-138, SHIP.deckY + 4.6, z - 0.56);
-    face.rotation.y = 0.32;
-    g.add(face);
-  }
-
-  // ---- floodlight boxes under the gallery band, spaced along the hull ----
-  for (let x = -140; x <= 140; x += 28) {
-    for (const side of [1, -1]) {
-      const z = side * (deckHalfWidth(x, side) - 0.9);
-      add(new THREE.BoxGeometry(1.1, 0.5, 0.5), mats.greyDark,
-        x, SHIP.deckY - 2.3, z);
-    }
-  }
-
-  return g;
-}
-
-/* ------------------------------------------------------------------ *
- * Hull-side fittings
- *
- * A 337 m hull seen from the water is mostly a long grey slab. What makes a
- * real carrier read as a working ship is the *clutter bolted to the shell*:
- * rows of life-raft canisters, portholes, sponsons, bilge keels, davits and
- * the anchor gear. All of it is placed by walking the same station table the
- * hull loft uses, so every fitting sits exactly on the plating.
- * ------------------------------------------------------------------ */
-function buildHullDetails(mats) {
-  const g = new THREE.Group();
-  const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z);
-    m.rotation.set(rx, ry, rz);
-    m.castShadow = true; m.receiveShadow = true;
-    g.add(m);
-    return m;
-  };
-  // a point on the shell at station t and height y, on the given side
-  const at = (t, y, side) => {
-    const [, keel] = lerpStations(t);
-    const top = SHIP.hullTopY;
-    const u = THREE.MathUtils.clamp((y + keel) / (top + keel), 0, 1);
-    const { halfW } = hullSection(t, u);
-    return new THREE.Vector3(-HALF_L + t * SHIP.length, y, side * halfW);
-  };
-
-  // ---- life-raft canisters: the white rows above the waterline ----------
-  const canGeo = new THREE.CylinderGeometry(0.42, 0.42, 1.9, 10);
-  for (let i = 0; i < 17; i++) {
-    const t = 0.09 + (i / 16) * 0.82;
-    for (const side of [1, -1]) {
-      const p = at(t, 13.6, side);
-      // lie them fore-and-aft along the shell
-      add(canGeo, mats.white, p.x, p.y, p.z, 0, 0, Math.PI / 2);
-    }
-  }
-
-  // ---- portholes / vent boxes ------------------------------------------
-  for (let i = 0; i < 24; i++) {
-    const t = 0.07 + (i / 23) * 0.86;
-    for (const side of [1, -1]) {
-      const p = at(t, 9.6, side);
-      add(new THREE.BoxGeometry(1.1, 0.8, 0.28), mats.greyDark, p.x, p.y, p.z);
-    }
-  }
-
-  // ---- bilge keels: the long fin that damps roll -----------------------
-  for (const side of [1, -1]) {
-    const p = at(0.44, -3.4, side);
-    add(new THREE.BoxGeometry(104, 2.6, 1.5), mats.greyDark,
-      p.x, p.y, p.z, 0, 0, side * 0.10);
-  }
-
-  // ---- sponsons: platforms projecting from the shell --------------------
-  for (const [t, side] of [[0.28, 1], [0.28, -1], [0.60, 1], [0.60, -1],
-                           [0.74, 1], [0.74, -1]]) {
-    const p = at(t, 16.4, side);
-    add(new THREE.BoxGeometry(9, 0.55, 4.4), mats.grey,
-      p.x, p.y, p.z + side * 1.9);
-    // a lip so the edge is not a razor-thin plate
-    add(new THREE.BoxGeometry(9, 0.5, 0.4), mats.greyDark,
-      p.x, p.y - 0.35, p.z + side * 4.0);
-  }
-
-  // ---- boat davits amidships -------------------------------------------
-  for (const side of [1, -1]) {
-    const p = at(0.52, 17.4, side);
-    add(new THREE.CylinderGeometry(0.15, 0.19, 4.4, 8), mats.grey,
-      p.x, p.y + 1.7, p.z + side * 0.5, side * 0.34);
-  }
-
-  // ---- anchor gear at the bow ------------------------------------------
-  for (const side of [1, -1]) {
-    const p = at(0.905, 6.4, side);
-    add(new THREE.BoxGeometry(1.3, 2.6, 1.1), mats.black, p.x, p.y, p.z);
-  }
-
-  // ---- accommodation ladder (starboard, amidships) ---------------------
-  {
-    const p = at(0.58, 8.0, 1);
-    add(new THREE.BoxGeometry(7.5, 0.35, 0.9), mats.greyDark,
-      p.x, p.y, p.z + 0.9, 0, 0, 0.42);
-  }
-
-  return g;
-}
-
-/* ------------------------------------------------------------------ *
- * Waterline outline — used for the bow-wave / hull foam ribbon
- * ------------------------------------------------------------------ */
-export function waterlineOutline(stations = 72) {
-  const pts = [];
-  const push = (t, side) => {
-    const [keel] = lerpStations(t).slice(1);
-    const u = keel / (SHIP.hullTopY + keel);      // u where the section is at y = 0
-    const { halfW } = hullSection(t, u);
-    pts.push({ t, x: -HALF_L + t * SHIP.length, z: side * halfW, side });
-  };
-  for (let i = 0; i <= stations; i++) push(i / stations, 1);
-  for (let i = stations; i >= 0; i--) push(i / stations, -1);
-  // outward normals in the XZ plane
-  const n = pts.length;
-  for (let i = 0; i < n; i++) {
-    const a = pts[(i - 1 + n) % n], b = pts[(i + 1) % n];
-    let dx = b.x - a.x, dz = b.z - a.z;
-    const l = Math.hypot(dx, dz) || 1;
-    dx /= l; dz /= l;
-    // rotate +90deg -> outward normal (starboard side points +z, port -z)
-    pts[i].nx = -dz;
-    pts[i].nz = dx;
-  }
-  return pts;
-}
-
-/* ------------------------------------------------------------------ *
- * Hydrostatic patches for the physics solver
- * ------------------------------------------------------------------ */
-export function buildPatches(stations = 26, ring = 14) {
-  const patches = [];
-  const p = new THREE.Vector3();
-  const pu = new THREE.Vector3();
-  const pv = new THREE.Vector3();
-  const n = new THREE.Vector3();
-  const eps = 1e-3;
-
-  for (let s = 0; s < 2; s++) {
-    const side = s === 0 ? 1 : -1;
-    for (let j = 0; j < stations; j++) {
-      const t0 = j / stations, t1 = (j + 1) / stations;
-      for (let i = 0; i < ring; i++) {
-        const u0 = i / ring, u1 = (i + 1) / ring;
-        const tc = (t0 + t1) / 2, uc = (u0 + u1) / 2;
-        hullPoint(tc, uc, side, p);
-        hullPoint(tc + eps, uc, side, pu);
-        hullPoint(tc, uc + eps, side, pv);
-        pu.sub(p).divideScalar(eps);
-        pv.sub(p).divideScalar(eps);
-        n.crossVectors(pv, pu).normalize();
-        // make sure it points away from the hull centreline
-        if (n.z * side < 0) n.negate();
-        // exact patch area = |dP/dt x dP/du| * dt * du
-        // (forgetting the parameter spans here makes the patches hundreds of
-        //  times too large, which then destroys the heave stiffness)
-        const area = pu.cross(pv).length() * (t1 - t0) * (u1 - u0);
-        patches.push({
-          pos: new THREE.Vector3(p.x, p.y, p.z),
-          nrm: n.clone(),
-          area,
-          kind: uc < 0.55 ? 'bottom' : 'side',
-        });
-      }
-    }
-  }
-
-  // deck + superstructure, so a capsized hull still floats plausibly
-  for (let j = 0; j < 10; j++) {
-    const x = -150 + j * 32;
-    for (let i = 0; i < 5; i++) {
-      const z = -32 + i * 16;
-      patches.push({
-        pos: new THREE.Vector3(x, SHIP.deckY, z),
-        nrm: new THREE.Vector3(0, 1, 0),
-        area: 32 * 16 * 0.8,
-        kind: 'deck',
-      });
-    }
-  }
-  for (let j = 0; j < 5; j++) {
-    const x = 34 + j * 12;
-    for (let i = 0; i < 3; i++) {
-      const z = 25 + i * 5;
-      patches.push({
-        pos: new THREE.Vector3(x, SHIP.deckY + 42, z),
-        nrm: new THREE.Vector3(0, 1, 0),
-        area: 12 * 5 * 0.7,
-        kind: 'deck',
-      });
-    }
-  }
-  return patches;
-}
-
-/* ------------------------------------------------------------------ *
- * Bow catapult sponson + stern ensign + elevator sills
- * ------------------------------------------------------------------ */
-
-/** The port-bow catapult sponson — the wedge "chin" hanging under the port
- *  forward flight deck. Every supercarrier has one; without it the bow
- *  reads as a plain wedge. */
-function buildBowSponson(mats) {
-  const g = new THREE.Group();
-  const s = new THREE.Shape();
-  s.moveTo(95, -37);
-  s.lineTo(148, -25.5);
-  s.lineTo(148, -37);
-  s.closePath();
-  const geo = new THREE.ExtrudeGeometry(s, { depth: 3.0, bevelEnabled: false });
-  geo.rotateX(Math.PI / 2);
-  geo.translate(0, SHIP.deckY - 0.4, 0);
-  const m = new THREE.Mesh(geo, mats.deckSide);
-  m.castShadow = true; m.receiveShadow = true;
-  g.add(m);
-  return g;
-}
-
-/** Raised sill frames around the deck elevators — the painted rectangles
- *  alone read as decals; a physical sill edge sells them as machinery. */
-function buildElevatorSills(mats) {
-  const g = new THREE.Group();
-  const rects = [[0, 20, 16, 30], [-110, -90, 16, 30], [-62, -42, -38, -26]];
-  for (const [x1, x2, z1, z2] of rects) {
-    const ins = 0.45, t = 0.34, h = 0.14;
-    const cx = (x1 + x2) / 2, cz = (z1 + z2) / 2;
-    const lx = (x2 - x1) - ins * 2, lz = (z2 - z1) - ins * 2;
-    for (const zz of [cz + lz / 2, cz - lz / 2]) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(lx, h, t), mats.greyDark);
-      m.position.set(cx, SHIP.deckY + h / 2, zz);
-      m.castShadow = true;
-      g.add(m);
-    }
-    for (const xx of [cx - lx / 2, cx + lx / 2]) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(t, h, lz), mats.greyDark);
-      m.position.set(xx, SHIP.deckY + h / 2, cz);
-      m.castShadow = true;
-      g.add(m);
-    }
-  }
-  return g;
-}
-
-/** The ensign at the stern gaff, flying aft. The cloth is a plane whose
- *  vertices ride two travelling sine harmonics with amplitude growing from
- *  the hoist (fixed edge) to the fly (free edge) — a cheap, honest flag.
- *  `group.userData.animate(t)` advances it. */
 function buildEnsign() {
   const g = new THREE.Group();
   const W = 5.2, H = 3.2;
@@ -1805,30 +298,17 @@ function buildEnsign() {
   const staff = new THREE.Mesh(
     new THREE.CylinderGeometry(0.09, 0.12, 15, 8),
     new THREE.MeshStandardMaterial({ color: 0xb8bec4, roughness: 0.5, metalness: 0.4 }));
-  staff.position.set(-167, SHIP.deckY + 7.5, 0);
+  staff.position.set(-HALF_L + 2, SHIP.deckY + 7.5, 0);
   staff.castShadow = true;
   g.add(staff);
-  flag.position.set(-167, SHIP.deckY + 13.6, 0);
+  flag.position.set(-HALF_L + 2, SHIP.deckY + 13.6, 0);
   flag.rotation.y = Math.PI / 2;         // plane spans aft
   g.add(flag);
   g.userData.animate = (t) => flag.userData.animate(t);
   return g;
 }
 
-/* ------------------------------------------------------------------ *
- * Static-geometry baking
- *
- * The model is authored as hundreds of small primitive meshes because that
- * is the only sane way to build it — but drawing ~900 separate buffers,
- * twice (main pass + shadow pass), is what melts the GPU. Every part that
- * never moves relative to the hull is merged into one vertex stream per
- * material. Subtrees flagged `userData.dynamic` (the rotating radar) are
- * left untouched, and materials used by a single mesh are left alone.
- * ------------------------------------------------------------------ */
 
-/** Swap triangle vertex order (i, i+1, i+2 -> i, i+2, i+1) across all
- *  attributes of a non-indexed geometry — needed when a mesh's accumulated
- *  transform has a negative determinant (mirrored port-side parts). */
 function flipWinding(geo) {
   const attrs = Object.values(geo.attributes);
   const count = geo.attributes.position.count;
@@ -1845,98 +325,400 @@ function flipWinding(geo) {
   }
 }
 
-function bakeStatic(root) {
-  root.updateMatrixWorld(true);
-  const rootInv = root.matrixWorld.clone().invert();
-  const byMat = new Map();
-  const doomed = [];
-  const m = new THREE.Matrix4();
 
-  (function walk(node) {
-    for (const child of node.children) {
-      if (child.userData.dynamic) continue;
-      if (child.isMesh) {
-        const geo = child.geometry.index
-          ? child.geometry.toNonIndexed()
-          : child.geometry.clone();
-        m.copy(rootInv).multiply(child.matrixWorld);
-        geo.applyMatrix4(m);
-        if (m.determinant() < 0) { flipWinding(geo); geo.computeVertexNormals(); }
-        let list = byMat.get(child.material);
-        if (!list) byMat.set(child.material, (list = []));
-        list.push(geo);
-        doomed.push(child);
-      } else {
-        walk(child);
-      }
+// Flight-deck artwork is generated from the same metres-based layout as geometry.
+const ZMIN = Math.min(...DECK_OUTLINE.map(p => p[1])) - 2;
+const ZMAX = Math.max(...DECK_OUTLINE.map(p => p[1])) + 10;
+function makeDeckTexture() {
+  return canvasTex(4096, 1024, (g, w, h) => {
+    const px = x => (x + HALF_L) / SHIP.length * w;
+    const pz = z => (1 - (z - ZMIN) / (ZMAX - ZMIN)) * h;
+    const scale = h / (ZMAX - ZMIN);
+    g.fillStyle = '#34383b'; g.fillRect(0, 0, w, h);
+    noiseOverlay(g, w, h, 17);
+    const line = (a, b, width, color, dash = []) => {
+      g.strokeStyle = color; g.lineWidth = width * scale;
+      g.setLineDash(dash.map(v => v * scale));
+      g.beginPath(); g.moveTo(px(a[0]), pz(a[1])); g.lineTo(px(b[0]), pz(b[1])); g.stroke();
+      g.setLineDash([]);
+    };
+    const rect = (x, z, l, d, color) => {
+      g.fillStyle = color; g.fillRect(px(x-l/2), pz(z+d/2), l/SHIP.length*w, d*scale);
+    };
+    // Weld seams and tie-down grid remain subtle at grazing angles.
+    for (let x=-168; x<171; x+=8) {
+      line([x,ZMIN], [x,ZMAX], 0.035, '#24292c');
+      for (let z=-47; z<35; z+=3.2) { g.fillStyle='#8b8e89'; g.beginPath(); g.arc(px(x),pz(z),0.85,0,Math.PI*2); g.fill(); }
     }
-  })(root);
-
-  for (const [mat, geos] of byMat) {
-    if (geos.length < 2) continue;
-    const merged = mergeGeometries(geos, false);
-    merged.computeBoundingSphere();
-    const mesh = new THREE.Mesh(merged, mat);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    root.add(mesh);
-    for (const g of geos) g.dispose();
-  }
-  for (const mesh of doomed) mesh.parent?.remove(mesh);
+    const {start:a,end:b,width} = LAYOUT.landing;
+    const n = LANDING_FRAME.normal.map(v => v * width / 2);
+    g.fillStyle='#292e31'; g.beginPath();
+    for (const p of [[a[0]+n[0],a[1]+n[1]],[b[0]+n[0],b[1]+n[1]],[b[0]-n[0],b[1]-n[1]],[a[0]-n[0],a[1]-n[1]]]) g.lineTo(px(p[0]),pz(p[1]));
+    g.closePath(); g.fill();
+    const { tangent:t, normal } = LANDING_FRAME;
+    const landingAt=(distance,offset)=>[a[0]+t[0]*distance+normal[0]*offset,a[1]+t[1]*distance+normal[1]*offset];
+    for (const side of [-1,1]) {
+      line(landingAt(0,side*width/2),landingAt(LANDING_FRAME.length,side*width/2),0.55,'#d9dad0');
+      line(landingAt(0,side*(width/2-1.0)),landingAt(LANDING_FRAME.length,side*(width/2-1.0)),0.55,'#d9dad0',[4.2,3.2]);
+    }
+    line(a,b,0.4,'#d8b84f');
+    // Sparse aft threshold marks, rather than the old keyboard-like zebra.
+    for(const side of [-1,1])for(const offset of [5.5,8])
+      line(landingAt(4,side*offset),landingAt(12,side*offset),0.5,'#d9dad0');
+    for (const [start, end] of ARRESTING_WIRES) line(start,end,0.16,'#aaaa9f');
+    CATAPULT_FRAMES.forEach(({start,end,deflector,normal:n,tangent:t},index) => {
+      line(start,end,0.7,'#92958e'); line(start,end,0.12,'#1b1e20');
+      // Yellow denotes the short launch/deflector safety zone. The full-length
+      // four-lane yellow corridors in the old texture were not in the photos.
+      for (const side of [-1,1]) line([start[0]-t[0]*8+n[0]*side*6,start[1]-t[1]*8+n[1]*side*6],[start[0]+t[0]*6+n[0]*side*6,start[1]+t[1]*6+n[1]*side*6],0.2,'#cbb15a',[1.2,1.2]);
+      g.font=`bold ${scale*1.7}px Arial`;g.fillStyle='#deded2';g.textAlign='center';g.fillText(String(index+1),px(start[0]-13),pz(start[1]));
+    });
+    for (const e of LAYOUT.elevators) {
+      rect(e.x,e.z,e.length,e.width,'#42484a');
+      g.strokeStyle='#d0ba55';g.lineWidth=scale*0.25;
+      g.strokeRect(px(e.x-e.length/2),pz(e.z+e.width/2),e.length/SHIP.length*w,e.width*scale);
+      line([e.x-e.length/2,e.z],[e.x+e.length/2,e.z],0.07,'#24282b');
+    }
+    // 65 is aligned to read from the bow, as on the real carrier.
+    g.save();g.translate(px(143),pz(0));g.rotate(-Math.PI/2);
+    g.font=`900 ${scale*13}px Arial`;g.strokeStyle='#dfdfd4';g.lineWidth=scale*0.4;
+    g.fillStyle='#373c3e';g.textAlign='center';g.textBaseline='middle';
+    g.strokeText(SHIP.number,0,0);g.fillText(SHIP.number,0,0);g.restore();
+    for (let x=-144;x<120;x+=18) {
+      const z=deckHalfWidth(x,1)-4;
+      line([x-6,z],[x+6,z],0.15,'#aaa99b');line([x,z-4],[x,z+2],0.15,'#aaa99b');
+    }
+    // Outline paint follows the actual polygon rather than a bounding rectangle.
+    for(let i=0;i<DECK_OUTLINE.length;i++) line(DECK_OUTLINE[i],DECK_OUTLINE[(i+1)%DECK_OUTLINE.length],0.32,'#c7c8bb');
+  }, {aniso:16});
 }
 
-/* ------------------------------------------------------------------ *
- * Assembly
- * ------------------------------------------------------------------ */
-export function createCarrier({ quality = 'high' } = {}) {
-  const group = new THREE.Group();
-  const mats = shipMaterials();
-
-  const hullStations = quality === 'low' ? 80 : 160;
-  const ring = quality === 'low' ? 18 : 32;
-
-  const hull = buildHull(mats.hull, mats.hullPort, hullStations, ring);
-  group.add(hull);
-  group.add(buildTransom(mats.hull));
-  // NB: no bulbous bow — the Ford class does not carry one, and a sphere
-  // glued to the stem reads as a cargo-ship part on a carrier.
-  group.add(buildDeck(mats));
-  const island = buildIsland(mats);
-  group.add(island);
-  group.add(buildDetails(mats));
-  group.add(buildHullDetails(mats));
-  // (no standalone bow sponson: seen from above it read as a floating block
-  // beside the hull. The tall gallery band now wraps the bow instead.)
-  group.add(buildElevatorSills(mats));
-  const ensign = buildEnsign();
-  group.add(ensign);
-
-  // ---- air wing: REMOVED by request — the ship is modelled as
-  // infrastructure only (parked-aircraft outlines remain painted on the
-  // deck texture). buildHornet/buildHawkeye/buildHelo are kept above for
-  // when the air wing comes back.
-
-  // one draw call per material for everything static (see bakeStatic)
-  bakeStatic(group);
-
-  group.userData = {
-    mats,
-    island,
-    patches: buildPatches(
-      quality === 'low' ? 18 : 26,
-      quality === 'low' ? 10 : 14,
-    ),
-    spin: island.userData.spin,
-    hull,
-    flagAnimate: ensign.userData.animate,
-  };
-
-  group.traverse((o) => {
-    if (o.isMesh) {
-      o.castShadow = true;
-      o.receiveShadow = true;
-    }
+function makePanelTexture() {
+  return canvasTex(1024,512,(g,w,h)=>{
+    g.fillStyle='#8d9395';g.fillRect(0,0,w,h);noiseOverlay(g,w,h,9);
+    g.strokeStyle='rgba(37,44,46,.15)';g.lineWidth=1;
+    for(let x=0;x<w;x+=96){g.beginPath();g.moveTo(x,0);g.lineTo(x,h);g.stroke();}
+    for(let y=0;y<h;y+=85){g.beginPath();g.moveTo(0,y);g.lineTo(w,y);g.stroke();}
   });
+}
+function shipMaterials() {
+  const normal=makeNormalTexture(256,0.7,16,4);
+  const hullRoughness=canvasTex(512,256,(g,w,h)=>{
+    const water=h*(1-13/32),gradient=g.createLinearGradient(0,water-65,0,water+12);
+    gradient.addColorStop(0,'#dedede');gradient.addColorStop(0.8,'#747474');gradient.addColorStop(1,'#565656');
+    g.fillStyle=gradient;g.fillRect(0,0,w,h);
+  });hullRoughness.colorSpace=THREE.NoColorSpace;
+  const deckRoughness=canvasTex(1024,256,(g,w,h)=>{
+    g.fillStyle='#e9e9e9';g.fillRect(0,0,w,h);
+    for(let i=0;i<65;i++){
+      const x=(i*0.61803398875%1)*w,y=(i*0.41421356237%1)*h;
+      g.fillStyle=`rgba(60,60,60,${0.12+(i%5)*0.025})`;g.beginPath();g.ellipse(x,y,15+(i%7)*15,3+(i%4)*2,0,0,Math.PI*2);g.fill();
+    }
+  });deckRoughness.colorSpace=THREE.NoColorSpace;
+  const mat=(name,options)=>new THREE.MeshPhysicalMaterial({name,roughness:0.62,metalness:0.04,clearcoat:0.2,clearcoatRoughness:0.28,...options});
+  return {
+    hull:mat('Enterprise starboard hull',{map:makeHullTexture(false),normalMap:normal,normalScale:new THREE.Vector2(0.18,0.18),roughnessMap:hullRoughness,clearcoat:0.38,clearcoatRoughness:0.18}),
+    hullPort:mat('Enterprise port hull',{map:makeHullTexture(true),normalMap:normal,normalScale:new THREE.Vector2(0.18,0.18),roughnessMap:hullRoughness,clearcoat:0.38,clearcoatRoughness:0.18}),
+    deckTop:mat('Enterprise flight deck',{map:makeDeckTexture(),roughness:0.79,roughnessMap:deckRoughness,metalness:0.02,clearcoat:0.16,clearcoatRoughness:0.48,side:THREE.DoubleSide}),
+    grey:mat('Haze grey',{color:0x838e93,roughness:0.57,clearcoat:0.34}),
+    island:mat('Island plating',{map:makePanelTexture(),color:0xc6cccb}),
+    dark:mat('Gallery recesses',{color:0x414b50}),
+    steel:mat('Machinery steel',{color:0x687277,roughness:0.53,metalness:0.45}),
+    white:mat('Radomes and rafts',{color:0xd4d7cd,roughness:0.9}),
+    glass:mat('Bridge windows',{color:0x294e5c,roughness:0.085,metalness:0.05,clearcoat:1,clearcoatRoughness:0.06,transparent:true,opacity:0.35,depthWrite:false}),
+    black:mat('Cables and apertures',{color:0x1f262a}),
+    yellow:mat('Deck equipment',{color:0xba9c42}),
+    red:mat('Fire equipment',{color:0xa34836}),
+    net:mat('Safety nets',{map:makeNetTexture(),transparent:true,side:THREE.DoubleSide,depthWrite:false,color:0x969d98}),
+  };
+}
+function mesh(parent,geo,mat,x=0,y=0,z=0) {
+  const m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;
+}
+function box(parent,mat,x,y,z,l,h,d) { return mesh(parent,new THREE.BoxGeometry(l,h,d),mat,x,y,z); }
+function strut(parent,mat,a,b,r=0.065,segments=6) {
+  const start=new THREE.Vector3(...a),end=new THREE.Vector3(...b),dir=end.clone().sub(start);
+  const m=mesh(parent,new THREE.CylinderGeometry(r,r,dir.length(),segments),mat,...start.clone().add(end).multiplyScalar(0.5).toArray());
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),dir.normalize());return m;
+}
+function railing(parent,mats,points,y,spacing=3.8) {
+  for(let i=0;i<points.length-1;i++) {
+    const a=points[i],b=points[i+1],length=Math.hypot(b[0]-a[0],b[1]-a[1]);
+    for(const height of [0.52,1.04])strut(parent,mats.grey,[a[0],y+height,a[1]],[b[0],y+height,b[1]],0.045);
+    for(let k=0,n=Math.ceil(length/spacing);k<n;k++) {
+      const f=k/n,x=a[0]+(b[0]-a[0])*f,z=a[1]+(b[1]-a[1])*f;
+      strut(parent,mats.grey,[x,y,z],[x,y+1.08,z],0.055);
+    }
+  }
+}
+function deckShape() {
+  const shape=new THREE.Shape();DECK_OUTLINE.forEach(([x,z],i)=>i?shape.lineTo(x,z):shape.moveTo(x,z));shape.closePath();return shape;
+}
+function buildDeck(mats) {
+  const g=new THREE.Group(),shape=deckShape();
+  const top=new THREE.ShapeGeometry(shape);
+  const positions=top.attributes.position,uv=new Float32Array(positions.count*2);
+  for(let i=0;i<positions.count;i++){uv[i*2]=(positions.getX(i)+HALF_L)/SHIP.length;uv[i*2+1]=(positions.getY(i)-ZMIN)/(ZMAX-ZMIN);}
+  top.setAttribute('uv',new THREE.BufferAttribute(uv,2));top.rotateX(Math.PI/2);top.translate(0,SHIP.deckY,0);
+  const ids=top.index.array;for(let i=0;i<ids.length;i+=3){const t=ids[i];ids[i]=ids[i+2];ids[i+2]=t;}top.computeVertexNormals();
+  mesh(g,top,mats.deckTop);
+  const slab=new THREE.ExtrudeGeometry(shape,{depth:1.5,bevelEnabled:false});slab.rotateX(Math.PI/2);slab.translate(0,SHIP.deckY-0.06,0);mesh(g,slab,mats.grey);
+  // Closed sloping overhang plating from the actual hull to the deck outline.
+  for(const side of [1,-1]) {
+    const edge=side>0?DECK_OUTLINE.slice(0,15):DECK_OUTLINE.slice(15).concat([DECK_OUTLINE[0]]);
+    for(let i=0;i<edge.length-1;i++) {
+      const a=edge[i],b=edge[i+1],verts=[];
+      for(const [x,z] of [a,b]) {
+        const t=THREE.MathUtils.clamp((x+HALF_L)/SHIP.length,0,1),p=hullPoint(t,0.83,side);
+        verts.push(x,SHIP.deckY-1.55,z,p.x,p.y,p.z);
+      }
+      const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));geo.setIndex(side>0?[0,1,2,2,1,3]:[0,2,1,2,3,1]);geo.computeVertexNormals();
+      // Reuse a dedicated material for the whole non-UV underside stream.
+      mesh(g,geo,mats.underside);
+      const length=Math.hypot(b[0]-a[0],b[1]-a[1]);
+      const catwalk=box(g,mats.dark,(a[0]+b[0])/2,SHIP.deckY-0.85,(a[1]+b[1])/2,length,0.24,1.15);
+      catwalk.rotation.y=-Math.atan2(b[1]-a[1],b[0]-a[0]);
+      if(length>1){const net=mesh(g,new THREE.PlaneGeometry(length,1.7),mats.net,(a[0]+b[0])/2,SHIP.deckY-0.55,(a[1]+b[1])/2+side*0.6);net.rotation.set(-Math.PI/2,-Math.atan2(b[1]-a[1],b[0]-a[0]),0);}
+    }
+    for(let x=-153;x<146;x+=12) {
+      const p=hullPoint((x+HALF_L)/SHIP.length,0.79,side),z=side*(deckHalfWidth(x,side)-0.6);
+      strut(g,mats.dark,p.toArray(),[x,SHIP.deckY-1.8,z],0.28,6);
+    }
+  }
+  for(const e of LAYOUT.elevators) {
+    box(g,mats.grey,e.x,SHIP.deckY-0.76,e.z,e.length,1.3,e.width);
+    for(const x of [e.x-e.length/2,e.x+e.length/2])strut(g,mats.steel,[x,8,e.z+e.side*e.width/2],[x,SHIP.deckY-1,e.z+e.side*e.width/2],0.32);
+    const p=hullPoint((e.x+HALF_L)/SHIP.length,0.78,e.side);
+    box(g,mats.black,e.x,13,p.z+e.side*0.25,e.length-1.6,7,0.2);
+    for(let y=10.3;y<=16;y+=0.48)box(g,mats.steel,e.x,y,p.z+e.side*0.4,e.length-1.6,0.035,0.2);
+  }
+  // Deflectors are lowered when there are no aircraft, keeping the deck walkable.
+  for(const cat of CATAPULT_FRAMES) {
+    const {deflector:[x,z],tangent:t,normal:n}=cat,def=LAYOUT.deflector;
+    for(let i=0;i<def.panels;i++) {
+      const offset=(i-(def.panels-1)/2)*def.panelWidth;
+      const panel=box(g,mats.steel,x+n[0]*offset,SHIP.deckY+0.055,z+n[1]*offset,def.length,0.11,def.panelWidth-0.1);
+      panel.rotation.y=-Math.atan2(t[1],t[0]);
+    }
+  }
+  // Actual cable geometry has a different specular response from painted lines.
+  for(const [a,b] of ARRESTING_WIRES) strut(g,mats.steel,[a[0],SHIP.deckY+0.06,a[1]],[b[0],SHIP.deckY+0.06,b[1]],0.045);
+  return g;
+}
 
+function houseOutline(cx,cz,length,width,corner) {
+  const x=length/2,z=width/2;
+  return [[-x+corner,-z],[x-corner,-z],[x,-z+corner],[x,z-corner],
+    [x-corner,z],[-x+corner,z],[-x,z-corner],[-x,-z+corner]]
+    .map(([dx,dz])=>[cx+dx,cz+dz]);
+}
+function profileSlab(parent,material,outline,y,thickness) {
+  const shape=new THREE.Shape();
+  outline.forEach(([x,z],i)=>i?shape.lineTo(x,z):shape.moveTo(x,z));shape.closePath();
+  const geo=new THREE.ExtrudeGeometry(shape,{depth:thickness,bevelEnabled:false});
+  geo.rotateX(Math.PI/2);geo.translate(0,y,0);
+  return mesh(parent,geo,material);
+}
+function bridgeHouse(parent,mats,cx,cz,house) {
+  const {y,length,width,corner}=house;
+  const outline=houseOutline(cx,cz,length,width,corner);
+  const gallery=houseOutline(cx,cz,length+2.4,width+2.4,corner+0.8);
+  profileSlab(parent,mats.grey,gallery,y,0.4);
+  profileSlab(parent,mats.island,outline,y+1.2,1.2);
+  // Each window follows a facet; the clipped corners and overhanging wings
+  // are part of the same profile as the sill, roof and exterior gallery.
+  for(let i=0;i<outline.length;i++) {
+    const a=outline[i],b=outline[(i+1)%outline.length];
+    const dx=b[0]-a[0],dz=b[1]-a[1],span=Math.hypot(dx,dz),angle=-Math.atan2(dz,dx);
+    const window=box(parent,mats.glass,(a[0]+b[0])/2,y+2,(a[1]+b[1])/2,span,1.2,0.08);
+    window.rotation.y=angle;
+    const bays=Math.ceil(span/1.65);
+    for(let k=0;k<=bays;k++) {
+      const f=k/bays,m=box(parent,mats.grey,a[0]+dx*f,y+2,a[1]+dz*f,0.11,1.3,0.17);
+      m.rotation.y=angle;
+    }
+  }
+  profileSlab(parent,mats.grey,houseOutline(cx,cz,length+0.9,width+0.9,corner+0.3),house.roofY,0.35);
+  railing(parent,mats,[...gallery,gallery[0]],y,2.5);
+}
+
+function buildIsland(mats) {
+  const g=new THREE.Group(),I=LAYOUT.island,{x:cx,z:cz,length:l,width:d}=I,Y=SHIP.deckY;
+  box(g,mats.grey,cx,Y+0.8,cz,l+4,1.6,d+2.6);
+  box(g,mats.island,cx,Y+8.1,cz,l,14.6,d);
+  // The number-bearing shoulder is broader than the supporting tower, with
+  // deeply ribbed cantilevers visible in the 2012 port-side close-ups.
+  const shoulder=I.houses[0];
+  profileSlab(g,mats.island,houseOutline(cx,cz,shoulder.length-2,shoulder.width-0.8,shoulder.corner),shoulder.y,5.3);
+  for(const side of [-1,1])for(let x=cx-11;x<=cx+11;x+=2.2) {
+    strut(g,mats.grey,[x,Y+8.9,cz+side*d/2],[x,shoulder.y-4.5,cz+side*(shoulder.width/2-0.4)],0.17);
+  }
+  // Enterprise's broad overhanging two-level bridge is its main recognition feature.
+  for(const house of I.houses) bridgeHouse(g,mats,cx,cz,house);
+  // Cantilevered galleries, stairs, piping and the port-side white 65.
+  for(const y of [Y+5.3,Y+11.2]) {
+    box(g,mats.grey,cx-3,y,cz-d/2-2.4,l-7,0.3,4.8);
+    railing(g,mats,[[cx-l/2+0.3,cz-d/2-4.5],[cx+l/2-6,cz-d/2-4.5]],y);
+    for(const x of [cx-9,cx+7])strut(g,mats.grey,[x,Y+1,cz-d/2],[x,y,cz-d/2-4.1],0.13);
+    // Companionways connect the deck galleries, including their handrails.
+    const sx=cx-l/2+1,sz=cz-d/2-2;
+    for(let n=0;n<12;n++)box(g,mats.steel,sx+n*0.32,y-4.2+n*0.35,sz,0.37,0.09,1.1);
+    for(const side of [-1,1])strut(g,mats.grey,[sx,y-3.2,sz+side*0.6],[sx+3.8,y+1,sz+side*0.6],0.055);
+  }
+  for(const side of [-1,1]) {
+    const label=canvasTex(512,256,(c,w,h)=>{c.fillStyle='#90979a';c.fillRect(0,0,w,h);c.font='bold 190px Arial';c.textAlign='center';c.textBaseline='middle';c.lineWidth=5;c.strokeStyle='#4c565b';c.strokeText(SHIP.number,w/2,h/2);c.fillStyle='#e1e4df';c.fillText(SHIP.number,w/2,h/2);});
+    const m=new THREE.MeshPhysicalMaterial({name:`Island ${SHIP.number} ${side}`,map:label,roughness:0.64,clearcoat:0.18});
+    mesh(g,new THREE.PlaneGeometry(13.8,5.1),m,cx+2,shoulder.y-2.65,cz+side*(shoulder.width/2-0.32)).rotation.y=side>0?0:Math.PI;
+    for(let y=Y+2;y<Y+13;y+=0.65)strut(g,mats.steel,[cx-l/2+2,y,cz+side*(d/2+0.25)],[cx-l/2+3.1,y,cz+side*(d/2+0.25)],0.06);
+    for(const x of [cx-l/2+2,cx-l/2+3.1])strut(g,mats.steel,[x,Y+1,cz+side*(d/2+0.25)],[x,Y+13,cz+side*(d/2+0.25)],0.08);
+  }
+  // Rounded flight-control observation cabin and its open ribbed balcony.
+  const porchX=cx+9.8,porchZ=cz-shoulder.width/2-1.1,porchY=shoulder.y-2.3;
+  mesh(g,new THREE.CylinderGeometry(3.2,3.2,1.5,32),mats.glass,porchX,porchY+0.5,porchZ);
+  for(const height of [-0.45,1.35])mesh(g,new THREE.CylinderGeometry(3.6,3.6,0.23,32),mats.grey,porchX,porchY+height,porchZ);
+  for(let i=0;i<12;i++) {
+    const angle=i*Math.PI/6,x=porchX+Math.cos(angle)*3.25,z=porchZ+Math.sin(angle)*3.25;
+    strut(g,mats.grey,[x,porchY-0.2,z],[x,porchY+1.3,z],0.075);
+    strut(g,mats.steel,[porchX,porchY-1.6,porchZ],[x,porchY-0.6,z],0.10);
+  }
+  for(const [x,side] of [[cx-12,-1],[cx+11,1]]) {
+    const z=cz+side*(shoulder.width/2+1),y=Y+9.8;
+    const arc=Array.from({length:17},(_,i)=>[x+3.5*Math.cos(i*Math.PI/16),z+side*3.5*Math.sin(i*Math.PI/16)]);
+    profileSlab(g,mats.grey,[[x-3.5,z],...arc,[x+3.5,z]],y,0.25);
+    railing(g,mats,arc,y,1.5);
+    for(let i=0;i<arc.length;i+=2)strut(g,mats.steel,[x,y-2.6,cz+side*d/2],[arc[i][0],y-0.2,arc[i][1]],0.11);
+  }
+  const warning=canvasTex(512,128,(c,w,h)=>{c.fillStyle='#262b29';c.fillRect(0,0,w,h);c.fillStyle='#d5bb55';c.textAlign='center';c.font='bold 30px Arial';['BEWARE OF JET','BLAST PROPS','AND ROTORS'].forEach((t,i)=>c.fillText(t,w/2,33+i*34));});
+  mesh(g,new THREE.PlaneGeometry(5.3,1.8),new THREE.MeshStandardMaterial({name:'Island blast warning',map:warning}),cx+2,Y+7,cz-d/2-0.1).rotation.y=Math.PI;
+  for(let x=cx-9;x<=cx+9;x+=6) {
+    box(g,mats.dark,x,Y+7.5,cz+d/2+0.05,3.3,2.2,0.15);
+    for(let k=0;k<7;k++)box(g,mats.grey,x,Y+6.6+k*0.27,cz+d/2+0.16,3.1,0.07,0.12);
+  }
+  const roof=SHIP.bridgeRoof.y;
+  // Rooftop equipment housings break up the broad roof, as in the final
+  // deployment photos; the open platforms carry radomes and mast services.
+  for(const [x,z,ll,hh,dd] of [[cx-7,cz,6,2.2,4],[cx+6,cz+1,5,1.1,3],[cx-1,cz-5,3,1.4,2]]) {
+    box(g,mats.island,x,roof+hh/2,z,ll,hh,dd);
+    box(g,mats.grey,x,roof+hh+0.15,z,ll+0.4,0.3,dd+0.4);
+    for(let yy=0.3;yy<hh;yy+=0.25)box(g,mats.dark,x,roof+yy,z+dd/2+0.02,ll-0.6,0.06,0.05);
+  }
+  // Two-tier open lattice / yardarm mast, not a Ford-class enclosed array tower.
+  const mx=cx-3,mz=cz,base=roof+0.4;
+  for(const [ax,az] of [[-2.1,-1.7],[-2.1,1.7],[2.1,-1.7],[2.1,1.7]])strut(g,mats.grey,[mx+ax,base,mz+az],[mx+ax*0.35,base+14,mz+az*0.35],0.17);
+  for(let y=0;y<14;y+=2.8) {
+    const a=1-y/14*0.65,b=1-(y+2.8)/14*0.65;
+    for(const side of [-1,1]){
+      strut(g,mats.steel,[mx-2.1*a,base+y,mz+side*1.7*a],[mx+2.1*b,base+y+2.8,mz+side*1.7*b],0.075);
+      strut(g,mats.steel,[mx+side*2.1*a,base+y,mz-1.7*a],[mx+side*2.1*b,base+y+2.8,mz+1.7*b],0.075);
+    }
+  }
+  strut(g,mats.grey,[mx,base+12,mz],[mx,base+31,mz],0.28);
+  for(const y of [27,30,31])mesh(g,new THREE.CylinderGeometry(0.52,0.52,0.14,12),mats.grey,mx,base+y,mz);
+  for(const [height,span] of [[14,23],[23,18]]) {
+    box(g,mats.grey,mx,base+height,mz,2.4,0.35,span);
+    for(const side of [-1,1]){
+      strut(g,mats.steel,[mx,base+height-4,mz],[mx,base+height,mz+side*span/2],0.13);
+      for(let z=3;z<span/2;z+=2.2)strut(g,mats.black,[mx,base+height,mz+side*z],[mx,base+height+2.6,mz+side*z],0.055);
+    }
+    railing(g,mats,[[mx-1.2,mz-span/2],[mx-1.2,mz+span/2]],base+height,2.8);
+  }
+  for(const [x,z,r] of [[cx-12,cz-5.4,1.7],[cx+12,cz+5.9,1.4],[cx-6,cz+6.5,1.2],[cx+7,cz-5.7,1.0]]) {
+    mesh(g,new THREE.CylinderGeometry(r,r,1.2,14),mats.white,x,roof+0.8,z);
+    mesh(g,new THREE.SphereGeometry(r,18,12,0,Math.PI*2,0,Math.PI/2),mats.white,x,roof+1.4,z);
+    box(g,mats.grey,x,roof-0.4,z,r*2.5,0.3,r*2.5);
+  }
+  // SPS-48 planar radar, separate SPS-49 open reflector; both remain dynamic.
+  const spin=new THREE.Group();spin.userData.dynamic=true;spin.position.set(cx+9,base+5,mz);
+  strut(g,mats.grey,[cx+9,roof,mz],[cx+9,base+3,mz],0.42);
+  const panel=box(spin,mats.grey,0,0,0,4.6,6.6,0.32);panel.rotation.z=-0.12;
+  for(let y=-2.8;y<=2.8;y+=0.5)box(spin,mats.steel,0,y,0.2,4.4,0.035,0.025);
+  strut(spin,mats.steel,[-2,-3,-0.5],[2,3,-0.5],0.08);g.add(spin);g.userData.spin=spin;
+  const search=new THREE.Group();search.userData.dynamic=true;search.position.set(mx,base+18.5,mz);
+  const reflector=(y,z)=>[0.035*(y*y+z*z),y,z];
+  const wire=points=>{for(let i=1;i<points.length;i++)strut(search,mats.steel,points[i-1],points[i],0.045);};
+  for(let k=-7;k<=7;k++) {
+    const z=k/8*4.8,h=1.8*Math.sqrt(1-(z/4.8)**2);
+    wire(Array.from({length:9},(_,j)=>reflector(-h+2*h*j/8,z)));
+  }
+  for(let k=-3;k<=3;k++) {
+    const y=k/4*1.8,w=4.8*Math.sqrt(1-(y/1.8)**2);
+    wire(Array.from({length:17},(_,j)=>reflector(y,-w+2*w*j/16)));
+  }
+  wire(Array.from({length:41},(_,k)=>reflector(1.8*Math.sin(k*Math.PI/20),4.8*Math.cos(k*Math.PI/20))));
+  strut(search,mats.grey,[-0.2,-1.7,-4.6],[-0.2,1.7,4.6],0.07);g.add(search);g.userData.searchRadar=search;
+  for(const z of [cz-6,cz+6])strut(g,mats.black,[cx+9,roof,z],[cx+9,roof+6,z],0.055);
+  return g;
+}
+function buildFittings(mats) {
+  const g=new THREE.Group();
+  // Ship-side fittings are placed against the shared hull loft, not fixed widths.
+  for(const side of [-1,1])for(let x=-149;x<=133;x+=6.8) {
+    const p=hullPoint((x+HALF_L)/SHIP.length,0.91,side);
+    const z=side*Math.min(Math.abs(p.z)+0.8,deckHalfWidth(x,side)-1);
+    const raft=mesh(g,new THREE.CylinderGeometry(0.42,0.42,1.8,10),mats.white,x,SHIP.deckY-2.7,z);raft.rotation.z=Math.PI/2;
+    box(g,mats.dark,x,SHIP.deckY-3.25,z,2.3,0.2,1.0);
+    for(const dx of [-0.55,0.55])box(g,mats.steel,x+dx,SHIP.deckY-2.72,z,0.08,0.88,0.82);
+  }
+  for(const side of [-1,1])for(let x=-155;x<153;x+=8) {
+    const p=hullPoint((x+HALF_L)/SHIP.length,0.65,side);
+    mesh(g,new THREE.CircleGeometry(0.28,10),mats.black,x,p.y,p.z+side*0.06).rotation.y=side>0?0:Math.PI;
+  }
+  // Anchor pockets, ring, shank and flukes on both sides of the fine bow.
+  for(const side of [-1,1]) {
+    const p=hullPoint(0.923,0.7,side);
+    mesh(g,new THREE.CircleGeometry(1.2,14),mats.black,p.x,p.y,p.z+side*0.08).rotation.y=side>0?0:Math.PI;
+    const anchor=new THREE.Group();anchor.position.set(p.x,p.y-1,p.z+side*0.2);anchor.rotation.y=side>0?0:Math.PI;
+    strut(anchor,mats.steel,[0,1,0],[0,-2.2,0],0.23);
+    strut(anchor,mats.steel,[-1.6,-1.6,0],[1.6,-1.6,0],0.23);
+    for(const s of [-1,1]){const f=box(anchor,mats.steel,s*1.45,-1.7,0,0.9,1.1,0.4);f.rotation.z=s*0.55;}
+    g.add(anchor);
+  }
+  // Enterprise fantail is recessed below the round-down, with closed rear bulkhead.
+  box(g,mats.grey,-HALF_L-0.7,9.5,0,1.0,1.3,34);
+  box(g,mats.dark,-HALF_L-0.75,13.1,0,0.2,5.5,25);
+  for(const z of [-13,-6,0,6,13])box(g,mats.grey,-HALF_L-1,13.1,z,0.3,5.8,0.3);
+  railing(g,mats,[[-HALF_L-1.1,-17],[-HALF_L-1.1,17]],10.2,2.5);
+  for(const side of [-1,1])for(const x of [-148,-80,40,119]) {
+    const z=side*(deckHalfWidth(x,side)-1.5);
+    box(g,mats.grey,x,SHIP.deckY-2.2,z,7,0.5,4);
+    strut(g,mats.grey,[x,SHIP.deckY-2,z],[x,SHIP.deckY+5,z+side*2],0.07);
+  }
+  // Three Phalanx mounts, two missile mounts on outboard gallery platforms.
+  for(const mount of LAYOUT.ciws) {
+    const z=mount.side*(deckHalfWidth(mount.x,mount.side)-0.4),y=SHIP.deckY-1.4;
+    box(g,mats.grey,mount.x,y-0.5,z,6,0.7,5);
+    railing(g,mats,[[mount.x-3,z+mount.side*2.4],[mount.x+3,z+mount.side*2.4]],y-0.1);
+  }
+  for(const mount of LAYOUT.launchers) {
+    const z=mount.side*(deckHalfWidth(mount.x,mount.side)-1.5),y=SHIP.deckY-1.6;
+    box(g,mats.grey,mount.x,y,z,6,0.6,5);
+    mesh(g,new THREE.CylinderGeometry(0.8,1.1,1.4,12),mats.grey,mount.x,y+1,z);
+    const tubes=new THREE.Group();tubes.position.set(mount.x,y+2.4,z);tubes.rotation.x=mount.side*0.45;
+    box(tubes,mats.grey,0,0,0,4.4,2,2.5);
+    for(let x=-1.5;x<=1.5;x+=1)for(const yy of [-0.5,0.5])box(tubes,mats.black,x,yy,mount.side*1.26,0.8,0.8,0.05);
+    g.add(tubes);
+  }
+  // Port optical landing aid, lights, and fire stations.
+  const oz=-deckHalfWidth(-105,-1)+1.8;
+  for(const x of [-106.7,-103.3])strut(g,mats.grey,[x,SHIP.deckY-1,oz],[x,SHIP.deckY+2.2,oz],0.13);
+  box(g,mats.grey,-105,SHIP.deckY+2.2,oz,4.2,2,1);
+  for(let i=-3;i<=3;i++)box(g,mats.yellow,-105+i*0.48,SHIP.deckY+2.4,oz-0.55,0.32,0.32,0.1);
+  for(const side of [-1,1])for(let x=-130;x<=130;x+=26)box(g,mats.red,x,SHIP.deckY-1.9,side*(deckHalfWidth(x,side)-0.8),0.65,0.9,0.3);
+  return g;
+}
+
+export function createCarrier({quality='high'}={}) {
+  const group=new THREE.Group();group.name=SHIP.name;
+  const mats=shipMaterials();mats.underside=new THREE.MeshStandardMaterial({name:'Sponson underside',color:0x737d82,roughness:0.8,side:THREE.DoubleSide});
+  const hull=buildHull(mats.hull,mats.hullPort,quality==='low'?80:160,quality==='low'?18:32);
+  group.add(hull,buildDeck(mats));
+  const island=buildIsland(mats);group.add(island,buildFittings(mats));
+  bakeStatic(island.userData.spin);
+  bakeStatic(island.userData.searchRadar);
+  const ensign=buildEnsign();group.add(ensign);
+  const propulsion=buildPropulsion(SHIP);group.add(propulsion.group);
+  const weapons=new WeaponBattery(SHIP.weapons);group.add(weapons.group);
+  bakeStatic(group);
+  group.userData={vessel:SHIP,loft,propulsion,weapons,mats,island,hull,patches:buildPatches(quality==='low'?18:26,quality==='low'?10:14),spin:island.userData.spin,searchRadar:island.userData.searchRadar,flagAnimate:ensign.userData.animate};
   return group;
 }

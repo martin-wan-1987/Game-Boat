@@ -1,628 +1,235 @@
-/**
- * waves.js — Gerstner wave field, shared by CPU physics and GPU rendering.
- *
- * Both the buoyancy solver (CPU, JS) and the ocean surface shader (GPU, GLSL)
- * evaluate the *same* wave parameters with the *same* math. That is the whole
- * reason the hull never visibly sinks through / floats above the water:
- * physics and visuals are one and the same function.
- *
- * Conventions
- *   +x = east-ish world axis, +y = up, +z = north-ish world axis
- *   "2D position" p = (x, z)
- *   1 unit = 1 metre, g = 9.81
+/** Metres, seconds. One differentiable surface for geometry and hydrodynamics.
+ * Ambient Gerstner spectrum plus finite C2 wave packets from any direction.
+ * The packet basis and its derivatives below generate the JS and GLSL forms.
  */
-
 export const G = 9.81;
-
-export const MAX_SEA = 12;  // ambient sea components (a real ocean surface is
-                            // a dense spectrum: more components = less
-                            // "regular wobbling plane", more actual sea)
-export const MAX_TSU = 8;   // tsunami wave-train components (a packet = a wave group)
-
-/* ------------------------------------------------------------------ *
- * small helpers
- * ------------------------------------------------------------------ */
+export const MAX_SEA = 24;
+export const MAX_PACKETS = 32;
 const TAU = Math.PI * 2;
+const POWER = 3;
+const RING_GROWTH=2;
+const LOBES = [{offset:0,width:1,weight:1},{offset:1.25,width:.45,weight:-.04}];
+const FRONT = -Math.min(...LOBES.map(l=>l.offset-l.width));
+const BACK = Math.max(...LOBES.map(l=>l.offset+l.width));
+export const rand = (min,max)=>min+Math.random()*(max-min);
+export const omegaOfK = k=>Math.sqrt(G*k);
+export const phaseSpeed = length=>Math.sqrt(G*length/TAU);
 
-function rand(min, max) { return min + Math.random() * (max - min); }
-
-/* Visual-only chop: four short, steep ripples baked into the GLSL as
- * constants. Decimetre-scale detail like this cannot move a 100 000 t hull,
- * so the CPU physics solver deliberately ignores it — but it roughens the
- * rendered shape and the specular. Every shader that samples the surface
- * gets the same terms, so foam ribbons still sit exactly on the water. */
-const CHOP_WAVES = Array.from({ length: 6 }, (_, i) => {
-  const ang = (i / 6) * Math.PI + rand(-0.5, 0.5);
-  const len = rand(7, 26);
-  const k = TAU / len;
-  return {
-    dx: Math.cos(ang), dz: Math.sin(ang),
-    k, w: Math.sqrt(G * k), a: rand(0.08, 0.24) * (1 - i * 0.09),
-    q: rand(0.55, 0.85), ph: rand(0, TAU),
-  };
-});
-const CHOP_GLSL = CHOP_WAVES.map((c) =>
-  `chopWave(p, ${c.dx.toFixed(4)}, ${c.dz.toFixed(4)}, ${c.k.toFixed(5)}, ` +
-  `${c.w.toFixed(5)}, ${c.a.toFixed(4)}, ${c.q.toFixed(3)}, ${c.ph.toFixed(4)});`).join('\n  ');
-
-/** Deep-water dispersion: omega from k. */
-export function omegaOfK(k) { return Math.sqrt(G * k); }
-
-/** Phase speed of a deep-water wave of wavelength L. */
-export function phaseSpeed(L) { return Math.sqrt(G * L / TAU); }
-
-/* ------------------------------------------------------------------ *
- * A single wave component
- * ------------------------------------------------------------------ */
-class Wave {
-  constructor(dirX, dirZ, amp, len, steep, phase, kind) {
-    const n = Math.hypot(dirX, dirZ) || 1;
-    this.dx = dirX / n;
-    this.dz = dirZ / n;
-    this.amp = amp;
-    this.len = len;
-    this.steep = steep;            // Gerstner Q, 0..1 (1 = sharpest, folding)
-    this.k = TAU / len;
-    this.omega = omegaOfK(this.k);
-    this.speed = this.omega / this.k;   // phase speed
-    this.phase = phase;
-    this.kind = kind;              // 'sea' | 'tsu'
-    this.lodDist = 0;              // metres at which short waves start fading
+function basis(x) {
+  const q=Math.max(0,1-x*x);
+  return [q**POWER,-2*POWER*x*q**(POWER-1)];
+}
+function profile(s,width) {
+  let y=0,slope=0;
+  for(const l of LOBES){
+    const [f,d]=basis((s/width-l.offset)/l.width);
+    y+=l.weight*f;slope+=l.weight*d/(width*l.width);
   }
+  return [y,slope];
 }
 
-/* ------------------------------------------------------------------ *
- * The wave field
- * ------------------------------------------------------------------ */
-export class WaveField {
-  constructor() {
-    this.sea = [];
-    this.tsunami = [];
-    this.time = 0;
-
-    // Sea-state multiplier: 1 = the calibrated everyday sea, up to ~1.7 as a
-    // squall builds. Applied identically by the CPU sampler and the GPU
-    // shader (uAgit) so physics and visuals stay one surface. The tsunami
-    // train is NOT scaled — a storm raises the ambient sea, not the event.
-    this.agitation = 1;
-
-    // tsunami packet envelope (super-Gaussian travelling along tsuDir)
-    this.tsuActive = false;
-    this.tsuDirX = 1;
-    this.tsuDirZ = 0;
-    this.tsuCenter = 0;      // s-coordinate of packet centre at t=0
-    this.tsuSpeed = 0;       // packet travel speed (= component phase speed)
-    this.tsuWidth = 1;       // half width of packet
-    this.tsuHeight = 0;      // design crest-to-trough height
-    this.tsuOriginX = 0;
-    this.tsuOriginZ = 0;
-    this.tsuSpawnT = 0;
-    this.tsuLife = 0;        // seconds the packet stays "alive"
+export class WavePacket {
+  constructor({x,z,dirX,dirZ,height,thickness,lateralWidth,speed,t0=0,kind='plane'}) {
+    const n=Math.hypot(dirX,dirZ);
+    this.dx=dirX/n;this.dz=dirZ/n;this.x=x;this.z=z;
+    this.height=height;this.width=thickness/2;this.lateral=lateralWidth/2;
+    this.speed=speed;this.t0=t0;
+    this.radial=kind==='radial';
   }
-
-  /* ---------------- ambient sea ---------------- */
-
-  /**
-   * Build a small, strongly directional sea from a Pierson–Moskowitz spectrum.
-   *
-   * Using a real spectrum (rather than "N equal waves") is what makes the
-   * surface read as water: a dominant swell plus the right amount of short
-   * chop, so there is visible texture at every camera distance instead of one
-   * glassy swell.
-   *
-   * @param {number} hs      significant wave height (m)
-   * @param {number} dirX    dominant travel direction (normalised later)
-   * @param {number} dirZ
-   * @param {number} spread  half-angle of directional spread, radians
-   * @param {number} peakLen peak wavelength (m)
-   */
-  buildSea(hs, dirX, dirZ, spread = 0.5, peakLen = 90) {
-    this.sea.length = 0;
-    const n = MAX_SEA;
-    const wp = Math.sqrt((2 * Math.PI * G) / peakLen);   // peak angular freq
-    const wMin = wp * 0.34, wMax = wp * 3.4;
-    const ALPHA = 0.0081;                                // PM constant
-    const ratio = Math.pow(wMax / wMin, 1 / (n - 1));
-
-    const ang0 = Math.atan2(dirZ, dirX);
-    for (let i = 0; i < n; i++) {
-      const w = wMin * Math.pow(ratio, i);
-      const dw = w * (ratio - 1) * 0.9;
-      // Pierson–Moskowitz
-      const S = (ALPHA * G * G / Math.pow(w, 5)) *
-                Math.exp(-1.25 * Math.pow(wp / w, 4));
-      const amp = Math.sqrt(2 * S * dw);
-      const k = w * w / G;                               // deep water
-      const len = TAU / k;
-      const ang = ang0 + rand(-spread, spread);
-      // longer swell runs straighter, chop is more scattered
-      const steep = Math.min(0.92, 0.42 + 0.40 * (w / wp) * 0.5 + 0.25 * Math.random());
-      const wv = new Wave(Math.cos(ang), Math.sin(ang), amp, len, steep,
-                          rand(0, TAU), 'sea');
-      wv.lodDist = Math.max(220, len * 22);
-      this.sea.push(wv);
-    }
-    this.calibrateSea(hs);
-    return this;
+  get leadingExtent(){return FRONT*this.width;}
+  get trailingExtent(){return BACK*this.width;}
+  coordinates(x,z,t){
+    const px=x-this.x,pz=z-this.z;
+    if(this.radial)return [this.trailingExtent+this.speed*(t-this.t0)-Math.hypot(px,pz),0];
+    return [px*this.dx+pz*this.dz+this.speed*(t-this.t0),-px*this.dz+pz*this.dx];
   }
-
-  /** Scale amplitudes so the resulting significant wave height matches `hs`. */
-  calibrateSea(hs) {
-    // Hs = 4*sqrt(m0),  m0 = sum(a_i^2 / 2)
-    let m0 = 0;
-    for (const w of this.sea) m0 += w.amp * w.amp * 0.5;
-    if (m0 <= 0) return;
-    const target = (hs * hs) / 16;
-    const s = Math.sqrt(target / m0);
-    for (const w of this.sea) w.amp *= s;
-  }
-
-  /* ---------------- tsunami ---------------- */
-
-  /**
-   * Spawn a tsunami wave train ahead of `origin` travelling along (dirX,dirZ)
-   * *towards* the ship.
-   *
-   * Modelled the physically honest way for deep water: a long, non-dispersive
-   * wave train (every crest shares one phase speed, like a real tsunami) with a
-   * steep leading front and a decaying tail. Height is crest-to-trough.
-   *
-   * Geometry is expressed in a packet frame:
-   *     sRel = s + speed * (t - t0)
-   * so the leading crest sits at sRel = 0 and rides along at `speed` toward
-   * decreasing s — i.e. straight at the ship.
-   *
-   * @param {object} o {x, z, dirX, dirZ, height, distance, speed, period, crests}
-   */
-  spawnTsunami(o) {
-    this.tsunami.length = 0;
-    const n = Math.hypot(o.dirX, o.dirZ) || 1;
-    const dx = o.dirX / n, dz = o.dirZ / n;
-    this.tsuDirX = dx; this.tsuDirZ = dz;
-
-    // Phase speed. A deep-ocean tsunami runs at ~200 m/s and would be gone
-    // before you could react, so this models a tsunami that has shoaled onto
-    // the continental shelf (c = sqrt(g*h), h ~ 40-60 m). Brisk enough to
-    // read as a landmark event pushing in at a purposeful pace, not a crawl.
-    const speed = o.speed ?? (26 + o.height * 1.2);     // m/s
-    const crests = Math.min(o.crests ?? 7, MAX_TSU);
-    // A real tsunami front is not a plane wave: refraction and the source
-    // geometry mean successive crests arrive a few degrees apart. This is what
-    // makes an otherwise head-on encounter develop roll (and, if she loses way,
-    // broach) instead of pure pitching.
-    const spread = o.spread ?? 0.20;                     // radians, per crest
-    const T0 = o.period ?? (8.0 + o.height * 0.34);      // seconds
-    const L0 = speed * T0;                               // non-dispersive
-
-    // ---- wave-group height profile -------------------------------------
-    // A tsunami is not one wave: it is a *group*. The leading crest is the
-    // wall the player sees coming; behind it follow a secondary crest, then
-    // a scatter of medium and small waves. `profile` shapes that group so the
-    // encounter reads as "several waves hitting together" rather than a single
-    // swell. Entries after the first are jittered so no two events match.
-    // A caller-supplied profile (the ultra tier) is used as-is, WITHOUT the
-    // geometric decay — that is exactly what makes it a train of large
-    // tsunamis instead of one big wave followed by ripples.
-    const profile = o.profile || [1.00, 0.88, 0.54, 0.74, 0.42, 0.52, 0.30, 0.22];
-    const a0 = 0.45 * o.height;
-    let sOff = 0;
-    for (let i = 0; i < crests; i++) {
-      const rel = o.profile
-        ? profile[i % profile.length]
-        : profile[i % profile.length] * Math.pow(0.93, i);
-      const jitter = rand(0.86, 1.14);                   // <- the randomness
-      const Li = L0 * rand(0.88, 1.14);
-      const ang = Math.atan2(dz, dx) + rand(-spread, spread);
-      const w = new Wave(Math.cos(ang), Math.sin(ang), a0 * rel * jitter,
-                         Li, 0, 0, 'tsu');
-      // non-dispersive: every crest rides at the packet speed
-      w.omega = w.k * speed;
-      w.speed = speed;
-      // The leading crest is near-breaking (Q>1 gives it a sharp, curling
-      // face) and curls harder the bigger the event — the ultra wall has to
-      // overhang; the rest of the group is progressively softer.
-      w.steep = i === 0
-        ? Math.min(1.15, 0.90 + o.height * 0.0065)
-        : rand(0.62, 0.86);
-      w.sOff = sOff;
-      w.phase = -w.k * sOff;     // crest i sits at sRel = sOff
-      w.lodDist = 1e9;           // the tsunami never fades with distance
-      this.tsunami.push(w);
-      sOff += L0 * rand(0.82, 1.12);
-    }
-
-    this.tsuSpeed = speed;
-    // wide enough that the whole train lives inside the envelope
-    this.tsuWidth = Math.max(L0 * 1.5, sOff * 0.98);
-    this.tsuHeight = o.height;
-    this.tsuOriginX = o.x + dx * o.distance;
-    this.tsuOriginZ = o.z + dz * o.distance;
-    this.tsuDistance0 = o.distance;
-    this.tsuSpawnT = this.time;
-    this.tsuActive = true;
-    // Mega-walls are ELEVATION waves: crest-only, no abyssal trough behind
-    // (see the tsunami loop in sampleBase / sampleWaves)
-    this.tsuElevation = o.height >= 60;
-
-    this.calibrateTsunami(o.height);
-    return this;
-  }
-
-  /** Envelope shape: hard leading edge, long trailing tail. */
-  envelope(sRel) {
-    const x = sRel / this.tsuWidth;
-    if (x < 0) {
-      const a = -x * 3.2;
-      if (a > 2.2) return 0;
-      return Math.exp(-Math.pow(a, 6));
-    }
-    const a = x * 0.85;
-    if (a > 3.0) return 0;
-    return Math.exp(-Math.pow(a, 2.2));
-  }
-
-  /** Elevation of the tsunami alone at a world XZ point (calibration helper). */
-  _tsuEta(bx, bz, t) {
-    if (!this.tsuActive) return 0;
-    const sMain = (bx - this.tsuOriginX) * this.tsuDirX +
-                  (bz - this.tsuOriginZ) * this.tsuDirZ;
-    const env = this.envelope(sMain + this.tsuSpeed * (t - this.tsuSpawnT));
-    if (env <= 1e-4) return 0;
-    let y = 0;
-    const elev = this.tsuElevation ? 1 : 0;
-    for (const w of this.tsunami) {
-      const si = (bx - this.tsuOriginX) * w.dx + (bz - this.tsuOriginZ) * w.dz;
-      const sRel = si + this.tsuSpeed * (t - this.tsuSpawnT);
-      const S = Math.sin(w.k * sRel + w.phase);
-      y += w.amp * env * (elev ? (0.5 + 0.5 * S) : S);
-    }
-    return y;
-  }
-
-  /** Numerically scale the train so max(eta)-min(eta) === target. */
-  calibrateTsunami(target) {
-    let lo = Infinity, hi = -Infinity;
-    const span = this.tsuWidth * 5.0;
-    for (let i = 0; i <= 700; i++) {
-      const s = -this.tsuWidth * 0.6 + (span * i) / 700;
-      const y = this._tsuEta(
-        this.tsuOriginX + this.tsuDirX * s,
-        this.tsuOriginZ + this.tsuDirZ * s,
-        this.tsuSpawnT);
-      if (y < lo) lo = y;
-      if (y > hi) hi = y;
-    }
-    const measured = hi - lo;
-    if (measured > 1e-6) {
-      const sc = target / measured;
-      for (const w of this.tsunami) w.amp *= sc;
-    }
-  }
-
-  /** Peak elevation of the train along the main axis (for the HUD readout). */
-  etaAlong(s) {
-    return this._tsuEta(
-      this.tsuOriginX + this.tsuDirX * s,
-      this.tsuOriginZ + this.tsuDirZ * s,
-      this.time);
-  }
-
-  /**
-   * Distance (m) from a world point to the leading crest of the tsunami.
-   * Positive while the front is still approaching, negative once past.
-   */
-  distanceToCrest(x, z) {
-    if (!this.tsuActive) return Infinity;
-    const sx = (x - this.tsuOriginX) * this.tsuDirX +
-               (z - this.tsuOriginZ) * this.tsuDirZ;
-    const travelled = (this.time - this.tsuSpawnT) * this.tsuSpeed;
-    return -sx - travelled;
-  }
-
-  update(dt) {
-    this.time += dt;
-    if (this.tsuActive) {
-      if (this.time - this.tsuSpawnT > this.tsuLife + 60) this.tsuActive = false;
-    }
-  }
-
-  /* ================================================================ *
-   * CPU sampling
-   * ================================================================ */
-
-  /**
-   * Full sample at a *base* (undisplaced) 2D position.
-   * Fills `out` with the displaced position, normal and water velocity.
-   */
-  sampleBase(bx, bz, out) {
-    const t = this.time;
-    let px = bx, pz = bz, py = 0;
-    let vx = 0, vy = 0, vz = 0;
-    // tangent derivatives (dP/dx and dP/dz) start as identity
-    let txx = 1, txy = 0, txz = 0;
-    let tzx = 0, tzy = 0, tzz = 1;
-
-    for (let i = 0; i < this.sea.length; i++) {
-      const w = this.sea[i];
-      const agit = this.agitation;
-      const f = w.k * (w.dx * bx + w.dz * bz) - w.omega * t + w.phase;
-      const S = Math.sin(f), C = Math.cos(f);
-      const QA = w.steep * w.amp * agit;
-      px += QA * w.dx * C;
-      pz += QA * w.dz * C;
-      py += w.amp * agit * S;
-      const k = w.k;
-      txx += -QA * k * w.dx * w.dx * S;
-      txz += -QA * k * w.dx * w.dz * S;
-      txy +=  w.amp * agit * k * w.dx * C;
-      tzx += -QA * k * w.dx * w.dz * S;
-      tzz += -QA * k * w.dz * w.dz * S;
-      tzy +=  w.amp * agit * k * w.dz * C;
-      vx += QA * w.dx * w.omega * S;
-      vz += QA * w.dz * w.omega * S;
-      vy += -w.amp * agit * w.omega * C;
-    }
-
-    if (this.tsuActive) {
-      const sMain = (bx - this.tsuOriginX) * this.tsuDirX +
-                    (bz - this.tsuOriginZ) * this.tsuDirZ;
-      const env = this.envelope(sMain + this.tsuSpeed * (t - this.tsuSpawnT));
-      if (env > 1e-4) {
-        const travel = this.tsuSpeed * (t - this.tsuSpawnT);
-        for (let i = 0; i < this.tsunami.length; i++) {
-          const w = this.tsunami[i];
-          // each crest is a plane perpendicular to *its own* axis, so the
-          // crest lines are oblique to each other -> real roll excitation
-          const si = (bx - this.tsuOriginX) * w.dx +
-                     (bz - this.tsuOriginZ) * w.dz;
-          const f = w.k * (si + travel) + w.phase;
-          const S = Math.sin(f), C = Math.cos(f);
-          const A = w.amp * env;
-          const QA = w.steep * env * A;
-          px += QA * w.dx * C;
-          pz += QA * w.dz * C;
-          py += A * S;
-          const k = w.k;
-          txx += -QA * k * w.dx * w.dx * S;
-          txz += -QA * k * w.dx * w.dz * S;
-          txy += A * k * w.dx * C;
-          tzx += -QA * k * w.dx * w.dz * S;
-          tzz += -QA * k * w.dz * w.dz * S;
-          tzy += A * k * w.dz * C;
-          vx += QA * w.dx * w.omega * S;
-          vz += QA * w.dz * w.omega * S;
-          vy += -A * w.omega * C;
-        }
-      }
-    }
-
-    // normal = normalize(cross(Tz, Tx))
-    let nx = tzy * txz - tzz * txy;
-    let ny = tzz * txx - tzx * txz;
-    let nz = tzx * txy - tzy * txx;
-    const nl = Math.hypot(nx, ny, nz) || 1;
-    nx /= nl; ny /= nl; nz /= nl;
-
-    out.x = px; out.y = py; out.z = pz;
-    out.nx = nx; out.ny = ny; out.nz = nz;
-    out.vx = vx; out.vy = vy; out.vz = vz;
-    // Jacobian: < 1 means the surface is compressed -> whitecap
-    out.jac = txx * tzz - txz * tzx;
+  distanceToCrest(x,z,t){return -this.coordinates(x,z,t)[0];}
+  sample(x,z,t,out){
+    out.y=out.dx=out.dz=out.vy=0;
+    if(this.radial&&t<this.t0)return out;
+    const px=x-this.x,pz=z-this.z,radius=this.radial?Math.hypot(px,pz):0;
+    const s=this.radial?this.trailingExtent+this.speed*(t-this.t0)-radius:px*this.dx+pz*this.dz+this.speed*(t-this.t0);
+    const r=this.radial?0:-px*this.dz+pz*this.dx;
+    if(s<=-this.leadingExtent||s>=this.trailingExtent||Math.abs(r)>=this.lateral)return out;
+    const [eta,ds]=profile(s,this.width),[cross,dr]=basis(r/this.lateral);
+    // An emitted ring starts with its rear support outside the origin.
+    // Every active point therefore has radius > 0, including at birth.
+    const dx=this.radial?-px/radius:this.dx,dz=this.radial?-pz/radius:this.dz;
+    const u=Math.max(0,Math.min(1,(t-this.t0)/RING_GROWTH));
+    const strength=this.radial?u**3*(10-15*u+6*u*u):1;
+    const growth=this.radial?30*u*u*(1-u)**2/RING_GROWTH:0;
+    const along=this.height*ds*cross*strength,across=this.radial?0:this.height*eta*dr/this.lateral;
+    out.y=this.height*eta*cross*strength;out.dx=along*dx-across*dz;out.dz=along*dz+across*dx;out.vy=along*this.speed+this.height*eta*cross*growth;
     return out;
   }
-
-  /**
-   * Water surface at a *world* horizontal position (x, z).
-   * Solves the inverse Gerstner mapping with a few fixed-point iterations so
-   * physics queries land on exactly the same surface the GPU draws.
-   */
-  sampleWorld(x, z, out, iterations = 3) {
-    let bx = x, bz = z;
-    const tmp = this._tmp || (this._tmp = {});
-    for (let i = 0; i < iterations; i++) {
-      this.sampleBase(bx, bz, tmp);
-      const ex = tmp.x - x, ez = tmp.z - z;
-      bx -= ex; bz -= ez;
-      if (Math.abs(ex) + Math.abs(ez) < 0.02) break;
-    }
-    return this.sampleBase(bx, bz, out);
-  }
-
-  /** Cheap: just the surface height at (x,z). */
-  heightAt(x, z) {
-    const o = this._h || (this._h = {});
-    this.sampleWorld(x, z, o, 2);
-    return o.y;
-  }
 }
 
-/* ------------------------------------------------------------------ *
- * GLSL — the same maths, mirrored exactly.
- * ------------------------------------------------------------------ */
-export function glslWaves() {
-  return /* glsl */`
+/** H(b) = b + sum(Q A d cos(phi)), with its analytic Jacobian.
+ * The jet is scratch for one query, never a time/position-keyed cache.
+ * Its phase terms also generate the vertical surface, so a Newton inverse
+ * and its final surface evaluation do not repeat trigonometric work. */
+function horizontalSea(field,bx,bz,jet) {
+  let px=bx,pz=bz,txx=1,txz=0,tzx=0,tzz=1;
+  for(let i=0;i<field.sea.length;i++){
+    const w=field.sea[i],A=w.amp*field.agitation,QA=w.steep*A;
+    const f=w.k*(w.dx*bx+w.dz*bz)-w.omega*field.time+w.phase,S=Math.sin(f),C=Math.cos(f);
+    jet.phases[i*3]=A;jet.phases[i*3+1]=S;jet.phases[i*3+2]=C;
+    px+=QA*w.dx*C;pz+=QA*w.dz*C;
+    txx-=QA*w.k*w.dx*w.dx*S;txz-=QA*w.k*w.dx*w.dz*S;
+    tzx-=QA*w.k*w.dx*w.dz*S;tzz-=QA*w.k*w.dz*w.dz*S;
+  }
+  jet.x=px;jet.z=pz;jet.txx=txx;jet.txz=txz;jet.tzx=tzx;jet.tzz=tzz;
+  jet.jac=txx*tzz-txz*tzx;
+  return jet;
+}
+
+/** Complete the same surface from its horizontal jet. Packets contribute
+ * only vertically; their height, slopes and velocity are evaluated once. */
+function surfaceFromJet(field,bx,bz,out,jet) {
+  const {x:px,z:pz,txx,txz,tzx,tzz}=jet;
+  let py=0,vx=0,vy=0,vz=0,txy=0,tzy=0,eventY=0;
+  for(let i=0;i<field.sea.length;i++){
+    const w=field.sea[i],A=jet.phases[i*3],S=jet.phases[i*3+1],C=jet.phases[i*3+2],QA=w.steep*A;
+    py+=A*S;txy+=A*w.k*w.dx*C;tzy+=A*w.k*w.dz*C;
+    vx+=QA*w.dx*w.omega*S;vz+=QA*w.dz*w.omega*S;vy-=A*w.omega*C;
+  }
+  for(const p of field.packets){
+    const pulse=p.sample(bx,bz,field.time,field._pulse);
+    py+=pulse.y;eventY+=pulse.y;txy+=pulse.dx;tzy+=pulse.dz;vy+=pulse.vy;
+  }
+  const nx=tzy*txz-tzz*txy,ny=tzz*txx-tzx*txz,nz=tzx*txy-tzy*txx;
+  const length=Math.hypot(nx,ny,nz);
+  Object.assign(out,{x:px,y:py,z:pz,nx:nx/length,ny:ny/length,nz:nz/length,vx,vy,vz,
+    jac:txx*tzz-txz*tzx,txx,txz,tzx,tzz,eventY});return out;
+}
+
+export class WaveField {
+  constructor(){this.sea=[];this.packets=[];this.time=0;this.agitation=1;this._seaJet={phases:new Float64Array(MAX_SEA*3)};this._pulse={};}
+  /** Direction weights partition spectrum energy, not wave height. */
+  buildSea(hs,dirX,dirZ,spread=.5,peakLen=90,directions=[{angle:0,weight:1}]) {
+    this.sea.length=0;
+    const wp=Math.sqrt(TAU*G/peakLen),base=Math.atan2(dirZ,dirX);
+    const n=MAX_SEA/directions.length,ratio=(3.4/.34)**(1/(n-1));
+    for(const sector of directions)for(let i=0;i<n;i++) {
+      const omega=wp*.34*ratio**i,dw=omega*(ratio-1)*.9;
+      const spectrum=.0081*G*G/omega**5*Math.exp(-1.25*(wp/omega)**4);
+      const angle=base+sector.angle+rand(-spread,spread),k=omega*omega/G;
+      this.sea.push({dx:Math.cos(angle),dz:Math.sin(angle),amp:Math.sqrt(2*spectrum*dw*sector.weight),
+        k,omega,phase:rand(0,TAU),steep:rand(.5,.8),len:TAU/k});
+    }
+    this.calibrateSea(hs);return this;
+  }
+  calibrateSea(hs){
+    const m0=this.sea.reduce((sum,w)=>sum+w.amp*w.amp/2,0);
+    if(m0===0)return;
+    const scale=hs/(4*Math.sqrt(m0));for(const w of this.sea)w.amp*=scale;
+    // A contraction bound for the horizontal map, so its inverse is unique.
+    const contraction=this.sea.reduce((sum,w)=>sum+w.steep*w.amp*w.k,0);
+    const horizontal=Math.min(1,.42/contraction);
+    for(const w of this.sea)w.steep*=horizontal;
+  }
+  get significantSeaHeight(){return 4*Math.sqrt(this.sea.reduce((s,w)=>s+w.amp*w.amp/2,0))*this.agitation;}
+  replacePackets(inputs){
+    if(inputs.length>MAX_PACKETS)throw new RangeError(`Wave packet capacity ${MAX_PACKETS}`);
+    this.packets=inputs.map(o=>new WavePacket({...o,t0:this.time+(o.delay??0)}));return this.packets;
+  }
+  clearPackets(){this.packets.length=0;}
+  /** Normalized local encounter with an event of at least minHeight. */
+  encounterAt(x,z,minHeight){
+    let peak=0;for(const packet of this.packets)peak=Math.max(peak,packet.height);
+    if(peak<minHeight||peak===0)return 0;
+    const q=Math.max(0,Math.min(1,this.sampleWorld(x,z,this._encounter??(this._encounter={})).eventY/peak));
+    return q*q*(3-2*q);
+  }
+  distanceToCrest(x,z){return this.packets.length?this.packets[0].distanceToCrest(x,z,this.time):Infinity;}
+  eventHeightAt(x,z,t=this.time){
+    let y=0;
+    for(const p of this.packets)y+=p.sample(x,z,t,this._pulse).y;
+    return y;
+  }
+  update(dt){this.time+=dt;}
+
+  sampleBase(bx,bz,out){
+    return surfaceFromJet(this,bx,bz,out,horizontalSea(this,bx,bz,this._seaJet));
+  }
+  /** Newton inverse of H. The injective horizontal Gerstner map excludes
+   * the purely vertical packets; complete their surface only at H^-1(x,z). */
+  sampleWorld(x,z,out){
+    let bx=x,bz=z;const jet=horizontalSea(this,bx,bz,this._seaJet);
+    for(let i=0;i<8;i++){
+      const ex=jet.x-x,ez=jet.z-z;
+      if(Math.abs(ex)+Math.abs(ez)<.0001)break;
+      bx-=(jet.tzz*ex-jet.txz*ez)/jet.jac;bz-=(-jet.tzx*ex+jet.txx*ez)/jet.jac;
+      horizontalSea(this,bx,bz,jet);
+    }
+    return surfaceFromJet(this,bx,bz,out,jet);
+  }
+  heightAt(x,z){return this.sampleWorld(x,z,this._height??(this._height={})).y;}
+}
+
+const PULSE_GLSL=LOBES.map(l=>`{
+  float u=(s/width-${l.offset.toFixed(8)})/${l.width.toFixed(8)};
+  float q=max(0.0,1.0-u*u);
+  eta+=${l.weight.toFixed(8)}*pow(q,${POWER.toFixed(1)});
+  ds+=${(-2*POWER*l.weight).toFixed(8)}*u*pow(q,${(POWER-1).toFixed(1)})/(width*${l.width.toFixed(8)});
+}`).join('\n');
+export function glslWaves(){return /* glsl */`
 #define MAX_SEA ${MAX_SEA}
-#define MAX_TSU ${MAX_TSU}
-
-uniform int   uSeaCount;
-uniform vec4  uSeaA[MAX_SEA];   // dirX, dirZ, amp, steep
-uniform vec4  uSeaB[MAX_SEA];   // k, omega, phase, lodDist
-
-uniform int   uTsuCount;
-uniform int   uTsuActive;
-uniform vec2  uTsuDir;
-uniform vec4  uTsuA[MAX_TSU];   // dirX, dirZ, amp, steep
-uniform vec4  uTsuB[MAX_TSU];   // k, omega, phase, (unused)
-uniform vec4  uTsuEnv;          // originX, originZ, speed, width
-uniform float uTsuT0;           // time at which the packet was spawned
-uniform float uTsuElev;         // 1 = elevation-only mega wall (no trough)
-
-uniform float uTime;
-uniform float uCamDist;         // distance from camera, for LOD fade
-uniform float uAgit;            // sea-state multiplier (CPU field.agitation)
-
-struct WaveSample {
-  vec3  pos;
-  vec3  nrm;
-  vec3  vel;
-  float jac;
-};
-
-WaveSample sampleWaves(vec2 p) {
-  vec3 pos = vec3(p.x, 0.0, p.y);
-  vec3 vel = vec3(0.0);
-  float txx = 1.0, txz = 0.0, txy = 0.0;
-  float tzx = 0.0, tzz = 1.0, tzy = 0.0;
-
-  // accumulates one short visual-only ripple (see CHOP_WAVES above)
-  #define chopWave(pp, dxx, dzz, kk, ww, aa, qq, phh) { \\
-    float f = kk * dot(vec2(dxx, dzz), pp) - ww * uTime + phh; \\
-    float S = sin(f), C = cos(f); \\
-    float QA = qq * aa; \\
-    pos.x += QA * dxx * C; \\
-    pos.z += QA * dzz * C; \\
-    pos.y += aa * S; \\
-    txx += -QA * kk * dxx * dxx * S; \\
-    txz += -QA * kk * dxx * dzz * S; \\
-    txy +=  aa * kk * dxx * C; \\
-    tzx += -QA * kk * dxx * dzz * S; \\
-    tzz += -QA * kk * dzz * dzz * S; \\
-    tzy +=  aa * kk * dzz * C; \\
+#define MAX_PACKETS ${MAX_PACKETS}
+uniform int uSeaCount,uPacketCount;
+uniform vec4 uSeaA[MAX_SEA],uSeaB[MAX_SEA];
+uniform vec4 uPacketA[MAX_PACKETS]; // origin XZ, direction XZ
+uniform vec4 uPacketB[MAX_PACKETS]; // height, half thickness, half lateral width, speed
+uniform float uPacketT0[MAX_PACKETS];
+uniform float uPacketMode[MAX_PACKETS];
+uniform float uTime,uCamDist,uAgit;
+struct WaveSample {vec3 pos;vec3 nrm;vec3 vel;float jac;};
+WaveSample sampleWaves(vec2 p){
+  vec3 pos=vec3(p.x,0.0,p.y),vel=vec3(0.0);
+  float txx=1.0,txz=0.0,txy=0.0,tzx=0.0,tzz=1.0,tzy=0.0;
+  for(int i=0;i<MAX_SEA;i++){
+    if(i>=uSeaCount)break;
+    vec4 A=uSeaA[i],B=uSeaB[i];float amp=A.z*uAgit,QA=A.w*amp;
+    float f=B.x*dot(A.xy,p)-B.y*uTime+B.z,S=sin(f),C=cos(f);
+    pos.xz+=QA*A.xy*C;pos.y+=amp*S;
+    txx-=QA*B.x*A.x*A.x*S;txz-=QA*B.x*A.x*A.y*S;
+    tzx-=QA*B.x*A.x*A.y*S;tzz-=QA*B.x*A.y*A.y*S;
+    txy+=amp*B.x*A.x*C;tzy+=amp*B.x*A.y*C;
+    vel.xz+=QA*A.xy*B.y*S;vel.y-=amp*B.y*C;
   }
-  ${CHOP_GLSL}
-
-  for (int i = 0; i < MAX_SEA; i++) {
-    if (i >= uSeaCount) break;
-    vec4 A = uSeaA[i];
-    vec4 B = uSeaB[i];
-    // amplitude LOD: short waves vanish with distance to avoid aliasing
-    float fade = 1.0 - smoothstep(B.w * 0.45, B.w, uCamDist);
-    float amp = A.z * uAgit * fade;
-    if (amp < 0.0005) continue;
-    float f = B.x * dot(A.xy, p) - B.y * uTime + B.z;
-    float S = sin(f), C = cos(f);
-    float QA = A.w * amp;
-    pos.x += QA * A.x * C;
-    pos.z += QA * A.y * C;
-    pos.y += amp * S;
-    float k = B.x;
-    txx += -QA * k * A.x * A.x * S;
-    txz += -QA * k * A.x * A.y * S;
-    txy +=  amp * k * A.x * C;
-    tzx += -QA * k * A.x * A.y * S;
-    tzz += -QA * k * A.y * A.y * S;
-    tzy +=  amp * k * A.y * C;
-    vel.x += QA * A.x * B.y * S;
-    vel.z += QA * A.y * B.y * S;
-    vel.y += -amp * B.y * C;
+  for(int i=0;i<MAX_PACKETS;i++){
+    if(i>=uPacketCount)break;
+    if(uPacketMode[i]>.5&&uTime<uPacketT0[i])continue;
+    vec4 A=uPacketA[i],B=uPacketB[i];vec2 d=A.zw,side=vec2(-d.y,d.x),delta=p-A.xy;
+    bool radial=uPacketMode[i]>.5;float radius=radial?length(delta):0.0,width=B.y;
+    float s=radial?${BACK.toFixed(8)}*width+B.w*(uTime-uPacketT0[i])-radius:dot(delta,d)+B.w*(uTime-uPacketT0[i]);
+    float r=radial?0.0:dot(delta,side);
+    if(s<=-${FRONT.toFixed(8)}*width || s>=${BACK.toFixed(8)}*width || abs(r)>=B.z)continue;
+    if(radial){d=-delta/radius;side=vec2(-d.y,d.x);}
+    float eta=0.0,ds=0.0;
+    ${PULSE_GLSL}
+    float v=r/B.z,q=max(0.0,1.0-v*v),crossProfile=pow(q,${POWER.toFixed(1)});
+    float dr=-${(2*POWER).toFixed(1)}*v*pow(q,${(POWER-1).toFixed(1)})/B.z;
+    float growthTime=clamp((uTime-uPacketT0[i])/${RING_GROWTH.toFixed(1)},0.0,1.0);
+    float strength=radial?pow(growthTime,3.0)*(10.0-15.0*growthTime+6.0*growthTime*growthTime):1.0;
+    float growth=radial?30.0*growthTime*growthTime*pow(1.0-growthTime,2.0)/${RING_GROWTH.toFixed(1)}:0.0;
+    float along=B.x*ds*crossProfile*strength,across=radial?0.0:B.x*eta*dr;
+    pos.y+=B.x*eta*crossProfile*strength;txy+=along*d.x+across*side.x;tzy+=along*d.y+across*side.y;
+    vel.y+=along*B.w+B.x*eta*crossProfile*growth;
   }
-
-  if (uTsuActive == 1) {
-    float sMain = dot(p - uTsuEnv.xy, uTsuDir);
-    float sRelMain = sMain + uTsuEnv.z * (uTime - uTsuT0);
-    float x = sRelMain / uTsuEnv.w;
-    float env = 0.0;
-    if (x < 0.0) {
-      float a = -x * 3.2;
-      if (a < 2.2) env = exp(-pow(a, 6.0));
-    } else {
-      float a = x * 0.85;
-      if (a < 3.0) env = exp(-pow(a, 2.2));
-    }
-    if (env > 1e-4) {
-      float travel = uTsuEnv.z * (uTime - uTsuT0);
-      for (int i = 0; i < MAX_TSU; i++) {
-        if (i >= uTsuCount) break;
-        vec4 A = uTsuA[i];
-        vec4 B = uTsuB[i];
-        float amp = A.z * env;
-        // each crest propagates along its own axis -> oblique crest lines
-        float si = dot(p - uTsuEnv.xy, A.xy);
-        float f = B.x * (si + travel) + B.z;
-        float S = sin(f), C = cos(f);
-        float QA = A.w * env * amp;
-        pos.x += QA * A.x * C;
-        pos.z += QA * A.y * C;
-        pos.y += amp * S;
-        float k = B.x;
-        txx += -QA * k * A.x * A.x * S;
-        txz += -QA * k * A.x * A.y * S;
-        txy +=  amp * k * A.x * C;
-        tzx += -QA * k * A.x * A.y * S;
-        tzz += -QA * k * A.y * A.y * S;
-        tzy +=  amp * k * A.y * C;
-        vel.x += QA * A.x * B.y * S;
-        vel.z += QA * A.y * B.y * S;
-        vel.y += -amp * B.y * C;
-      }
-    }
-  }
-
-  WaveSample o;
-  o.pos = pos;
-  // A folding Gerstner surface (Q > 1, which the mega wall deliberately is)
-  // has parallel tangents at the fold: cross() is ~zero and normalize()
-  // yields NaN, which rasterises as flashing black patches on the wave
-  // face. Fall back to straight-up there — the fold is foam anyway.
-  vec3 n = cross(vec3(tzx, tzy, tzz), vec3(txx, txy, txz));
-  float nl2 = dot(n, n);
-  o.nrm = nl2 > 1e-10 ? n * inversesqrt(nl2) : vec3(0.0, 1.0, 0.0);
-  o.vel = vel;
-  o.jac = txx * tzz - txz * tzx;
-  return o;
+  WaveSample o;o.pos=pos;o.vel=vel;o.nrm=normalize(cross(vec3(tzx,tzy,tzz),vec3(txx,txy,txz)));
+  o.jac=txx*tzz-txz*tzx;return o;
+}`;}
+export function makeWaveUniforms(THREE){
+  const arr=n=>Array.from({length:n},()=>new THREE.Vector4());
+  return {uSeaCount:{value:0},uSeaA:{value:arr(MAX_SEA)},uSeaB:{value:arr(MAX_SEA)},
+    uPacketCount:{value:0},uPacketA:{value:arr(MAX_PACKETS)},uPacketB:{value:arr(MAX_PACKETS)},
+    uPacketT0:{value:new Float32Array(MAX_PACKETS)},uPacketMode:{value:new Float32Array(MAX_PACKETS)},uTime:{value:0},uCamDist:{value:0},uAgit:{value:1}};
 }
-`;
+export function applyWaveUniforms(u,field){
+  u.uSeaCount.value=field.sea.length;
+  field.sea.forEach((w,i)=>{u.uSeaA.value[i].set(w.dx,w.dz,w.amp,w.steep);u.uSeaB.value[i].set(w.k,w.omega,w.phase,0);});
+  u.uPacketCount.value=field.packets.length;
+  field.packets.forEach((p,i)=>{u.uPacketA.value[i].set(p.x,p.z,p.dx,p.dz);u.uPacketB.value[i].set(p.height,p.width,p.lateral,p.speed);u.uPacketT0.value[i]=p.t0;u.uPacketMode.value[i]=Number(p.radial);});
+  u.uTime.value=field.time;u.uAgit.value=field.agitation;
 }
-
-/** Fill the uniform objects from the JS wave field. */
-export function applyWaveUniforms(uniforms, field) {
-  const A = uniforms.uSeaA.value;
-  const B = uniforms.uSeaB.value;
-  const n = Math.min(field.sea.length, MAX_SEA);
-  for (let i = 0; i < n; i++) {
-    const w = field.sea[i];
-    A[i].set(w.dx, w.dz, w.amp, w.steep);
-    B[i].set(w.k, w.omega, w.phase, w.lodDist);
-  }
-  uniforms.uSeaCount.value = n;
-
-  const TA = uniforms.uTsuA.value;
-  const TB = uniforms.uTsuB.value;
-  const m = Math.min(field.tsunami.length, MAX_TSU);
-  for (let i = 0; i < m; i++) {
-    const w = field.tsunami[i];
-    TA[i].set(w.dx, w.dz, w.amp, w.steep);
-    TB[i].set(w.k, w.omega, w.phase, 0);
-  }
-  uniforms.uTsuCount.value = m;
-  uniforms.uTsuActive.value = field.tsuActive ? 1 : 0;
-  uniforms.uTsuDir.value.set(field.tsuDirX, field.tsuDirZ);
-  uniforms.uTsuEnv.value.set(field.tsuOriginX, field.tsuOriginZ,
-                             field.tsuSpeed, field.tsuWidth);
-  uniforms.uTsuT0.value = field.tsuSpawnT;
-  uniforms.uTsuElev.value = field.tsuElevation ? 1 : 0;
-  uniforms.uAgit.value = field.agitation;
-}
-
-/** Allocate the uniform block shared by every shader that samples waves. */
-export function makeWaveUniforms(THREE) {
-  const arr = (n) => Array.from({ length: n }, () => new THREE.Vector4());
-  return {
-    uSeaCount:  { value: 0 },
-    uSeaA:      { value: arr(MAX_SEA) },
-    uSeaB:      { value: arr(MAX_SEA) },
-    uTsuCount:  { value: 0 },
-    uTsuActive: { value: 0 },
-    uTsuDir:    { value: new THREE.Vector2(1, 0) },
-    uTsuA:      { value: arr(MAX_TSU) },
-    uTsuB:      { value: arr(MAX_TSU) },
-    uTsuEnv:    { value: new THREE.Vector4(0, 0, 0, 1) },
-    uTsuT0:     { value: 0 },
-    uTsuElev:   { value: 0 },
-    uTime:      { value: 0 },
-    uCamDist:   { value: 0 },
-    uAgit:      { value: 1 },
-  };
-}
-
-export { rand };

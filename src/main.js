@@ -10,17 +10,28 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { WaveField, makeWaveUniforms, applyWaveUniforms } from './waves.js';
 import { Ocean } from './ocean.js';
 import { SkySystem } from './sky.js';
-import { createCarrier, SHIP } from './ship.js';
+import { SHIP } from './carrier-layout.js';
+import { FLEET, FLEET_BY_ID } from './fleet.js';
+import { AtmospherePass } from './atmosphere.js';
 import { ShipPhysics } from './physics.js';
-import { CameraRig } from './camera.js';
+import { CameraRig, HOME_ORBIT } from './camera.js';
+import {cameraModes} from './vessel-capabilities.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { Screens } from './ui.js';
-import { TsunamiManager, TSUNAMI_TIERS } from './tsunami.js';
+import { TsunamiManager, TSUNAMI_TIERS, SEA_STATE } from './tsunami.js';
 import { DamageModel } from './damage.js';
-import { HullFoam, WakeRibbon, Particles, SprayEmitter, Rain, PropWash } from './fx.js';
+import { Particles, Rain } from './fx.js';
+import { VesselWaterFX } from './vessel-water.js';
+import { WaterReflection } from './water-reflection.js';
 import { CockpitOverlay } from './cockpit.js';
 import { Audio } from './audio.js';
+import {Searchlights,makeSearchlightUniforms} from './searchlights.js';
+import {Meteors,meteorWave} from './meteors.js';
+import {RandomSea} from './random-sea.js';
+import {SolidWater} from './solid-water.js';
+import {Islands} from './islands.js';
+import {CarrierAircraft} from './aircraft.js';
 
 /* ------------------------------------------------------------------ *
  * quality presets
@@ -76,6 +87,8 @@ class Game {
     this.paused = false;
     this.showHelp = false;
     this.mode = 'free';
+    this.manualNight=new URLSearchParams(location.search).get('night')==='1';
+    this.vesselId=FLEET_BY_ID[new URLSearchParams(location.search).get('ship')]?.spec.id??SHIP.id;
     this.lostAt = null;
     this.resultShown = false;
     this.alertFired = false;
@@ -90,9 +103,12 @@ class Game {
   async boot() {
     this.screens = new Screens({
       onStart: (mode) => this.startGame(mode),
+      onVessel: (id) => this.selectVessel(id),
       onAgain: () => this.startGame(this.mode),
       onExit: () => this.exitToLobby(),
       onResume: () => { this.paused = false; },
+      onNight:()=>this.toggleNight(),
+      getNight:()=>this.manualNight,
     });
 
     this.buildRenderer();
@@ -108,51 +124,49 @@ class Game {
     ];
     await this.screens.runLoading(steps);
 
-    // Pre-compile every material up front. three.js compiles a shader the
-    // first time its material is actually drawn; if that happens while you are
-    // switching cameras the frame stalls and can flash. Doing it here, once,
-    // while the loading screen is still up, removes that entirely.
-    //
-    // The button listener is bound BEFORE the compile: compile() is
-    // synchronous and can block for seconds on a slow GPU, and a click that
-    // lands during it would otherwise be dropped — the bar reads 100%, the
-    // button is lit, and pressing it does nothing. Bound first, the click
-    // simply queues and fires the moment the main thread frees.
+    // Keep the loading screen up until material programs and the real
+    // postprocessing path are ready; progress alone is not a readiness signal.
     this.screens.setProgress(100, '编译着色器 · 稍候');
+    this.screens.enableEnter(false);
     document.getElementById('enterBtn').addEventListener('click', () => {
       this.audio.init();
       this.audio.resume();
       this.screens.show('lobby');
     });
-    try { this.renderer.compile(this.scene, this.camera); } catch (e) { /* non-fatal */ }
-
-    // Shader-variant warm-up. The first tsunami summon compiled ~3 new
-    // programs SYNCHRONOUSLY — a several-hundred-ms main-thread stall on
-    // real GPUs, which the compositor presents as a full-screen black
-    // flash. Render one frame each of the tsunami / elevation-wall / full
-    // storm states back here behind the loading screen, then restore calm,
-    // so no state a wave can put the scene in ever compiles mid-game.
+    this.rig._snap = true;
+    this.rig.update(0, this.shipMesh, this.field, this.tsunami.dir);
+    // Compile all scene materials (including ones outside the boot camera's
+    // frustum) against the same target RenderPass uses, rather than the screen.
+    // Both vessels and all weather/wave materials warm on the real linear
+    // composer path before entry. Selection cannot compile a new variant.
+    const selected=this.vesselId,target=this.renderer.getRenderTarget(),shadow=this.skySys.sunLight.castShadow;
     try {
-      this.field.spawnTsunami({ x: 0, z: 0, dirX: 1, dirZ: 0, height: 12,
-        distance: 4000, crests: 2, speed: 40 });
-      this.skySys.setStorm(1);
-      // rain too: it is INVISIBLE in calm weather, and compile() skips
-      // invisible objects — its material otherwise compiles the moment a
-      // storm first switches it on
-      this.rain.mesh.visible = true;
-      this.rain.mat.opacity = 0.4;
-      this.ocean.update(0, this.phys.position, this.field);
-      this.renderer.render(this.scene, this.camera);
-      this.field.tsuElevation = true;              // the mega-wall variant
-      this.ocean.update(0, this.phys.position, this.field);
-      this.renderer.render(this.scene, this.camera);
-      this.field.tsunami.length = 0;
-      this.field.tsuActive = false;
-      this.field.tsuElevation = false;
-      this.rain.mesh.visible = false;
-      this.rain.mat.opacity = 0;
-      this.skySys.setStorm(0);
-    } catch (e) { /* non-fatal */ }
+      for(const id of Object.keys(this.vessels)) {
+        this.selectVessel(id);
+        this.rig.update(0,this.shipMesh,this.field,this.tsunami.dir);
+        this.meteors.warmup(true);this.skySys.setStorm(1,1);this.updateSearchlights();
+        this.field.replacePackets([{x:4000,z:0,dirX:1,dirZ:0,height:30,thickness:210,lateralWidth:2200,speed:18}]);
+        this.shipMesh.userData.weapons.warmup(true);
+        this.skySys.setStorm(1);this.rain.mesh.visible=true;this.rain.mat.opacity=.4;
+        for(const castShadow of [shadow,false]){
+          this.skySys.sunLight.castShadow=castShadow;
+          this.renderer.setRenderTarget(this.composer.readBuffer);
+          await this.renderer.compileAsync(this.scene,this.camera);
+          this.renderer.setRenderTarget(target);this.render();
+        }
+        this.shipMesh.userData.weapons.warmup(false);
+      }
+    } finally {
+      this.renderer.setRenderTarget(target);this.skySys.sunLight.castShadow=shadow;this.selectVessel(selected);
+      this.field.clearPackets();this.rain.mesh.visible=false;this.rain.mat.opacity=0;
+      this.meteors.warmup(false);
+      this.skySys.time=this.time;this.skySys.setStorm(this.storm);
+    }
+
+    this.render();
+    this.screens.setProgress(100, '就绪');
+    this.screens.enableEnter(true);
+    if (new URLSearchParams(location.search).get('play') === '1') this.startGame(new URLSearchParams(location.search).get('mode')==='random'?'random':'free');
 
     this.loop();
   }
@@ -167,7 +181,7 @@ class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.q.pixelRatio));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.92;
+    this.renderer.toneMappingExposure = 0.72;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = this.q.shadow > 0;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -181,59 +195,88 @@ class Game {
   }
 
   buildScene() {
+    this.searchlightUniforms=makeSearchlightUniforms();
     this.skySys = new SkySystem(this.renderer, this.scene, this.q.shadow);
     this.rig = new CameraRig(this.camera);
   }
 
   buildWaves() {
+    this.solidWater=new SolidWater(Math.max(...FLEET.map(({spec})=>spec.deckOutline.length)));
     this.waveUniforms = makeWaveUniforms(THREE);
     this.field = new WaveField();
-    // An everyday sea with real swell (Hs ≈ 2.6 m): the ocean must never be
-    // a flat lake — she should be working, spray coming over the bow at
-    // speed, before any tsunami is fired.
-    this.field.buildSea(2.6, 1, 0, 0.45, 62);
+    // Shared 5.6 m significant wave height and four-direction spectrum.
+    this.field.buildSea(SEA_STATE.hs, 1, 0, SEA_STATE.spread, SEA_STATE.peakLength, SEA_STATE.directions);
     this.ocean = new Ocean({
       waveUniforms: this.waveUniforms,
+      searchlightUniforms:this.searchlightUniforms,
+      solidWater:this.solidWater,
       extent: 12000, seg: this.q.oceanSeg, grade: this.q.grade,
       quality: this.quality,
     });
     this.scene.add(this.ocean.mesh);
+    this.islands=new Islands(this.waveUniforms,this.ocean.foamTex);this.scene.add(this.islands.group);
+    Object.assign(this.ocean.uniforms,this.islands.uniforms);
   }
+
+  get activeVessel(){return this.vessels[this.vesselId];}
+  get shipMesh(){return this.activeVessel.mesh;}
+  get phys(){return this.activeVessel.physics;}
+  get waterFX(){return this.activeVessel.waterFX;}
+  get damage(){return this.activeVessel.damage;}
+  get vessel(){return this.shipMesh.userData.vessel;}
 
   buildShip() {
-    this.shipMesh = createCarrier({ quality: this.q.shipDetail });
-    this.scene.add(this.shipMesh);
-    this.shipSpin = this.shipMesh.userData.spin;
-    this.shipFlag = this.shipMesh.userData.flagAnimate;
+    this.vessels=Object.fromEntries(FLEET.map(({build})=>{
+      const mesh=build({quality:this.q.shipDetail});
+      mesh.userData.searchlights=new Searchlights(mesh.userData.vessel);mesh.add(mesh.userData.searchlights.group);
+      mesh.visible=mesh.userData.vessel.id===this.vesselId;this.scene.add(mesh);
+      return [mesh.userData.vessel.id,{mesh,aircraft:new CarrierAircraft(mesh.userData.vessel)}];
+    }));
   }
-
   buildPhysics() {
-    this.phys = new ShipPhysics(this.shipMesh.userData.patches, {});
-    this.phys.reset(0, 0, 0);
-    this.shipMesh.position.copy(this.phys.position);
-    this.shipMesh.quaternion.copy(this.phys.quaternion);
+    for(const entry of Object.values(this.vessels)){
+      entry.physics=new ShipPhysics(entry.mesh.userData.patches,{vessel:entry.mesh.userData.vessel});
+      entry.physics.reset(0,0,0);entry.physics.localToWorld(new THREE.Vector3(),entry.mesh.position);
+    }
+  }
+  selectVessel(id) {
+    this.vesselId=id;
+    for(const [key,entry] of Object.entries(this.vessels)){
+      const visible=key===id;entry.mesh.visible=visible;entry.waterFX.foam.visible=visible;entry.waterFX.drops.visible=visible;
+      entry.aircraft.group.visible=visible;
+      entry.mesh.userData.weapons.tracers.mesh.visible=visible;
+    }
+    this.rig.setVessel(this.vessel);this.screens.setVessel(this.vessel);this.resetScenario();
+    this.camera.near=Math.min(.9,this.vessel.length*.00263);this.camera.updateProjectionMatrix();
+    this.skySys.sunLight.shadow.normalBias=Math.min(1.4,this.vessel.length*.00409);
   }
 
   buildEnv() {
     this.skySys.followTarget(new THREE.Vector3());
     this.ocean.setEnvMap(this.skySys.envMap);
-    const sunCol = new THREE.Color(1.0, 0.96, 0.88);
+    this.ocean.setClouds(this.skySys.clouds);
+    const sunCol = new THREE.Color(1.0, 0.91, 0.78);
     this.ocean.setSun(this.skySys.sunDir, sunCol);
     this.ocean.setFog(this.skySys.scene.fog.color, this.skySys.fogDensity);
+    this.waterReflection = new WaterReflection(Math.ceil(innerWidth * 0.5), Math.ceil(innerHeight * 0.5));
+    this.ocean.setReflection(this.waterReflection.texture, this.waterReflection.worldToUV);
   }
 
   buildFX() {
     this.particles = new Particles(this.q.particles);
-    this.spray = new SprayEmitter(this.particles);
-    this.hullFoam = new HullFoam(this.waveUniforms);
-    this.wake = new WakeRibbon(this.waveUniforms, { tex: this.ocean.foamTex });
-    this.propWash = new PropWash(this.waveUniforms, { tex: this.ocean.foamTex });
-    this.scene.add(this.hullFoam.mesh, this.wake.mesh, this.propWash.mesh,
-      this.particles.points);
-    this.particles.setPixelRatio(this.renderer.getPixelRatio());
-
-    this.tsunami = new TsunamiManager(this.field);
-    this.damage = new DamageModel();
+    for(const [id,entry] of Object.entries(this.vessels)) {
+      const {vessel,loft}=entry.mesh.userData;
+      entry.waterFX=new VesselWaterFX(this.waveUniforms,{vessel,loft,tex:this.ocean.foamTex,
+        solidWater:this.solidWater,islands:this.islands,
+        particles:this.q.particles*2,pixelRatio:this.renderer.getPixelRatio()});
+      entry.waterFX.foam.visible=entry.waterFX.drops.visible=id===this.vesselId;
+      this.scene.add(entry.waterFX.foam,entry.waterFX.drops);entry.damage=new DamageModel(vessel);
+      this.scene.add(entry.aircraft.group);entry.aircraft.group.visible=id===this.vesselId;
+    }
+    this.scene.add(this.particles.points);this.particles.setPixelRatio(this.renderer.getPixelRatio());
+    this.tsunami=new TsunamiManager(this.field);
+    this.meteors=new Meteors();this.scene.add(this.meteors.group);this.randomSea=new RandomSea();
+    for(const entry of Object.values(this.vessels))this.scene.add(entry.mesh.userData.weapons.tracers.mesh);
     this.audio = new Audio();
 
     // storm / weather
@@ -247,12 +290,17 @@ class Game {
       onThrottle: (v) => { this.input.setThrottle(v); },
       onCamera: (m) => this.setCamera(m),
       onTsunami: (tier) => this.fireTsunami(tier),
+      onAnchor: () => this.toggleAnchor(),
+      onNight:()=>this.toggleNight(),
     });
   }
 
   buildPost() {
-    this.composer = new EffectComposer(this.renderer);
+    const target=new THREE.WebGLRenderTarget(innerWidth,innerHeight,{type:THREE.HalfFloatType,depthBuffer:true,
+      depthTexture:new THREE.DepthTexture(innerWidth,innerHeight)});
+    this.composer = new EffectComposer(this.renderer,target);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.atmosphere=new AtmospherePass(this.camera,this.skySys.clouds,this.skySys.sunLight,this.searchlightUniforms);this.composer.addPass(this.atmosphere);
     if (this.q.bloom) {
       this.bloom = new UnrealBloomPass(
         new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -279,12 +327,16 @@ class Game {
       onHelp: () => { this.showHelp = !this.showHelp; },
       onPause: () => { if (this.running) this.paused = !this.paused; },
       onMute: () => { this.audio.toggleMute(); },
+      onMainFire: () => this.fireMainGun(),
+      onSalvo:()=>this.requestSalvo(),onGunSide:side=>this.setGunSide(side),
+      onPeriscope:()=>this.togglePeriscope(),
     });
   }
 
   /* ---------------- flow ---------------- */
   startGame(mode) {
     this.mode = mode;
+    this.screens.setMode(mode);
     this.screens.hideAll();
     this.hud.show(true);
     this.resetScenario();
@@ -294,8 +346,9 @@ class Game {
     this.lostAt = null;
     this.audio.init();
     this.audio.resume();
-    this.hud.pushLog('启航 · 普通模式 · 自由航行', 0);
-    this.hud.pushLog('海啸将从舰艏方向推来', 0);
+    this.screens.setNight(this.manualNight,mode);
+    this.hud.pushLog(mode==='random'?'启航 · 随机海况 · 昼夜自动交替':'启航 · 普通模式 · 自由航行', 0);
+    this.hud.pushLog('恶劣海况 · 四面交叉涌浪约 5–6 米', 0);
   }
 
   exitToLobby() {
@@ -307,74 +360,113 @@ class Game {
     this.phys.reset(0, 0, 0);
     this.phys.throttle = 0;
     this.phys.rudder = 0;
-    this.phys.anchorDown = false;
-    this.phys.anchorChain = 0;
+    this.phys.anchor.reset();
     this.damage.reset();
-    this.tsunami.state = 'idle';
-    this.tsunami.followups = 0;
-    this.tsunami.peakRoll = 0;
-    this.tsunami.peakPitch = 0;
-    this.field.tsunami.length = 0;
-    this.field.tsuActive = false;
+    this.tsunami.reset();
+    this.meteors?.reset();this.randomSea?.reset();
     this.field.time = 0;
-    this.wake.reset();
+    this.waterFX.reset();
+    this.shipMesh.userData.weapons.reset();this.input.release();
+    this.shipMesh.userData.periscope?.reset();this.particles.reset();this.islands.sprayDebt=0;
     this.time = 0;
     this.alertFired = false;
     this.hud.setThrottle(0);
     this.input.setThrottle(0);
     this.hud.logs.length = 0;
-    this.rig.radius = 620;
-    this.rig.theta = -0.6;
-    this.rig.phi = 1.12;
+    Object.assign(this.rig, this.rig.home);
+    this.acc=0;this.field.agitation=1;this.phys.localToWorld(new THREE.Vector3(),this.shipMesh.position);
+    this.shipMesh.quaternion.copy(this.phys.quaternion);
+    this.activeVessel.aircraft.reset(this.shipMesh,this.phys);
+    document.getElementById('periscopeView').hidden=true;
     // The rig has been sitting at the world origin (inside the hull) since
     // boot — while the lobby covered the screen that was invisible. Without
     // this snap the first seconds of play lerp the lens out THROUGH the hull,
     // whose unlit DoubleSide interior flashes black across the view.
     this.rig._snap = true;
-    this.storm = 0;
-    this.skySys?.setStorm(0);
+    this.storm = .42;
+    this.skySys?.setStorm(this.storm,this.mode==='random'?this.randomSea.nightTarget:Number(this.manualNight));
     this.cockpit?.show(false);
   }
 
   fireTsunami(tierId) {
-    if (!this.running) return;
+    if (!this.running||this.mode!=='free') return;
     // Free mode: fire as often as you like. A new event REPLACES the wave
-    // train that is still running — the field is reset by spawnTsunami, so
+    // train that is still running — the manager replaces its packet set, so
     // there is no state to clean up here.
     const tier = TSUNAMI_TIERS[tierId];
     if (!tier) return;
-    this.tsunami.trigger(tierId, {
-      position: this.phys.position,
-      heading: this.phys.heading,
-    }, this.time);
+    this.tsunami.trigger(tierId, this.phys, this.time);
     this.hud.pushLog(`探测到${tier.label} · 浪高 ${this.tsunami.height.toFixed(1)} m`, this.time);
-    this.audio.alarm(tierId === 'large' || tierId === 'ultra' ? 2 : 1);
+    this.audio.alarm(tier.danger >= 0.7 ? 2 : 1);
     this.alertFired = true;
   }
 
   toggleAnchor() {
-    if (!this.running) return;
+    if (!this.running || this.paused || this.showHelp) return;
     const p = this.phys;
-    p.anchorDown = !p.anchorDown;
-    if (p.anchorDown) {
-      const bow = new THREE.Vector3(SHIP.length / 2 - 4, 0, 0)
-        .applyQuaternion(p.quaternion).add(p.position);
-      p.anchorPos.set(bow.x, 0, bow.z);
-      p.anchorTarget = 480;
-      this.hud.pushLog('抛锚 · 放出锚链 480 m', this.time);
+    if (p.anchor.phase === 'lowering') return;
+    if (p.anchor.phase === 'stowed') {
+      const bow = p.localToWorld(new THREE.Vector3(this.vessel.length / 2 - 4, 0, 0),new THREE.Vector3());
+      bow.y = 0;
+      p.anchor.drop(bow);
+      this.hud.pushLog('正在抛锚 · 3 秒后到底', this.time);
     } else {
-      p.anchorTarget = 0;
+      p.anchor.reset();
       this.hud.pushLog('起锚', this.time);
     }
   }
 
+  toggleNight(){
+    this.manualNight=!this.manualNight;
+    this.screens.setNight(this.manualNight,this.screens.mode);
+    if(!this.running)this.skySys.setStorm(this.storm,Number(this.manualNight));
+  }
+  updateSearchlights(){this.shipMesh.userData.searchlights.update(this.skySys.night,this.searchlightUniforms);}
+
+  fireMainGun(){
+    if(!this.running||this.paused||this.showHelp)return;
+    const weapons=this.shipMesh.userData.weapons;
+    weapons.requestMain();
+    weapons.update(0,{main:true,onShot:shot=>this.gunShot(shot)});
+  }
+  requestSalvo(){
+    if(!this.running||this.paused||this.showHelp)return;
+    this.shipMesh.userData.weapons.requestSalvo();
+  }
+  setGunSide(side){
+    if(!this.running||this.paused||this.showHelp)return;
+    this.shipMesh.userData.weapons.setSide(side);
+  }
+  gunShot({spec,origin,direction,recoilScale}){
+    const calibre=spec.radius*2,projectileMass=7800*Math.PI*(calibre/2)**2*calibre*5;
+    this.phys.applyImpulseAtPoint(direction.clone().multiplyScalar(-projectileMass*780*recoilScale),origin);
+    const count=Math.ceil(12+calibre*80),spread=calibre*7;
+    for(let i=0;i<count;i++){
+      const velocity=direction.clone().multiplyScalar(6+Math.random()*15);
+      velocity.x+=(Math.random()-.5)*spread;velocity.y+=(Math.random()-.5)*spread;velocity.z+=(Math.random()-.5)*spread;
+      this.particles.spawn(origin.x,origin.y,origin.z,velocity.x,velocity.y,velocity.z,1.3+Math.random()*1.8,.8+calibre*6,3);
+    }
+    this.rig.addShake(Math.min(.42,calibre*recoilScale*.18));this.audio.hit(Math.min(.6,calibre*1.1));
+  }
+  togglePeriscope(){
+    const optic=this.shipMesh.userData.periscope;
+    if(!optic||!this.running||this.paused||this.showHelp)return;
+    optic.toggle();this.input.release();this.rig._snap=true;
+    this.hud.pushLog(optic.raised?'潜望镜升起中 · 舰岛视角可观察':'潜望镜收起中',this.time);
+  }
+  cameraView(){
+    const optic=this.shipMesh.userData.periscope,bridgeOptic=optic?.mirrorView(this.rig.mode)??false;
+    return {bridgeOptic,bridgeEye:bridgeOptic?optic.localEye(this.shipMesh,new THREE.Vector3()).toArray():null};
+  }
+
   setCamera(mode) {
-    this.rig.setMode(mode);
+    if(!this.rig.setMode(mode))return;
+    this.input.walkMode = mode === 'walk';
     this.hud.setCamera(mode);
   }
 
   cycleCamera() {
-    const modes = ['orbit', 'chase', 'bridge', 'deck', 'cinema', 'walk'];
+    const modes = cameraModes(this.vessel);
     const i = modes.indexOf(this.rig.mode);
     this.setCamera(modes[(i + 1) % modes.length]);
   }
@@ -387,7 +479,7 @@ class Game {
     this.govern(raw, dt);
     if (!this.running) { this.render(); return; }
 
-    if (!this.paused && !this.showHelp) {
+    if (!this.paused && !this.showHelp && dt>0) {
       this.step(dt);
     } else {
       // still render, just frozen
@@ -420,6 +512,7 @@ class Game {
     this.composer?.setSize(window.innerWidth, window.innerHeight);
     this.bloom?.setSize(window.innerWidth, window.innerHeight);
     this.particles.setPixelRatio(r);
+    for(const v of Object.values(this.vessels))v.waterFX.resize(innerHeight,r);
     return true;
   }
 
@@ -455,11 +548,16 @@ class Game {
     // single source of truth for the engine order is the Input state, which
     // both the keyboard and the draggable telegraph write into
     this.phys.throttle = this.input.throttle;
+    const anchorBefore = this.phys.anchor.phase;
     while (this.acc >= h && sub < 6) {
       this.phys.rudder = this.input.rudder;
       this.phys.step(h, this.field);
+      this.islands.collide(this.phys,h);
       this.acc -= h;
       sub++;
+    }
+    if (anchorBefore === 'lowering' && this.phys.anchor.phase === 'set') {
+      this.hud.pushLog('锚链已经到底', this.time);
     }
     // After a stall (shader compile, GC, tab switch) the backlog would make
     // every following frame run the full 6 substeps, stretching the stall
@@ -467,10 +565,35 @@ class Game {
     // not care about 100 ms of missed buoyancy.
     if (this.acc > 0.1) this.acc = 0;
 
-    this.shipMesh.position.copy(this.phys.position);
+    this.phys.localToWorld(new THREE.Vector3(),this.shipMesh.position);
     this.shipMesh.quaternion.copy(this.phys.quaternion);
-    if (this.shipSpin) this.shipSpin.rotation.y += dt * 0.6;
-    this.shipFlag?.(this.time);
+    const parts=this.shipMesh.userData;
+    if(parts.spin)parts.spin.rotation.y+=dt*.6;
+    if(parts.searchRadar)parts.searchRadar.rotation.y+=dt*.9;
+    parts.flagAnimate?.(this.time);
+    parts.propulsion.update(dt,this.phys.throttle,this.phys.speedKnots,this.phys.rudderAngle);
+    if(this.mode==='random'){
+      const scheduled=this.randomSea.update(this.time,this.phys,this.tsunami,this.meteors);
+      if(scheduled.phaseChanged)this.hud.pushLog(this.randomSea.nightTarget?'夜幕降临 · 留意陨石':'天亮 · 留意随机海啸',this.time);
+      if(scheduled.event){
+        this.hud.pushLog(scheduled.event.kind==='meteor'?`陨石来袭 · ${scheduled.event.count} 块碎石；军舰长按近防炮拦截`:`随机海啸 · 浪高 ${scheduled.event.height.toFixed(1)} m`,this.time);
+        this.audio.alarm(2);
+      }
+    }
+    this.meteors.prepare(dt,this.field,this.shipMesh);
+    parts.weapons.update(dt,{main:this.input.keys.has('f'),ciws:this.input.keys.has('v'),rotate:Number(this.input.keys.has('l'))-Number(this.input.keys.has('j')),night:this.skySys.night,
+      onShot:shot=>this.gunShot(shot),
+      targets:this.meteors.fragments,onIntercept:(rock,point)=>this.meteors.intercept(rock,this.particles,point),field:this.field});
+    this.meteors.resolve({time:this.time,particles:this.particles,
+      onSea:(rock,point)=>{
+        this.tsunami.triggerSpec(meteorWave(rock.waveHeight),this.phys,this.time,{height:rock.waveHeight,epicentre:point});
+        this.hud.pushLog(`陨石入海 · ${rock.waveHeight.toFixed(1)} m 环形海啸`,this.time);this.rig.addShake(.75);this.audio.hit(1);
+      },
+      onHull:(rock,point)=>{
+        const mass=2800*4*Math.PI*rock.radius**3/3,relative=rock.velocity.clone().sub(this.phys.velocity);
+        this.damage.impact(.5*mass*relative.lengthSq(),this.shipMesh.worldToLocal(point.clone()),this.time,this.phys.mass);
+        this.rig.addShake(.25);this.audio.hit(.5);
+      }});
 
     // ---- tsunami + damage ----------------------------------------
     // bow punch first: how deep the forefoot is buried in the face of the
@@ -479,34 +602,26 @@ class Game {
     // hit the bridge glass and the shudder through the hull — the whole
     // "crashing through a wave" experience.
     if (!this._bowLocal) {
-      this._bowLocal = new THREE.Vector3(150, 20, 0);
+      this._bowLocal = new THREE.Vector3();
       this._bowWorld = new THREE.Vector3();
     }
-    this._bowWorld.copy(this._bowLocal)
-      .applyQuaternion(this.phys.quaternion).add(this.phys.position);
+    this._bowLocal.set(this.vessel.length*.44,this.vessel.deckY,0);
+    this.phys.localToWorld(this._bowLocal,this._bowWorld);
     const bowPunch = THREE.MathUtils.clamp(
       (this.field.heightAt(this._bowWorld.x, this._bowWorld.z) - this._bowWorld.y) / 3, 0, 1);
 
     const before = this.tsunami.state;
     this.tsunami.update(dt, this.time, this.phys, this.phys);
     if (before !== this.tsunami.state) {
-      if (this.tsunami.state === 'active') this.hud.pushLog('海啸抵达舰体', this.time);
+      if (this.tsunami.state === 'active') this.hud.pushLog(`${this.tsunami.tier.label}抵达舰体`, this.time);
       if (this.tsunami.state === 'clearing') {
         this.hud.pushLog(
-          `海啸通过 · 最大横摇 ${(this.tsunami.peakRoll * 57.2958).toFixed(1)}° / 最大纵摇 ${(this.tsunami.peakPitch * 57.2958).toFixed(1)}°`,
+          `${this.tsunami.tier.label}通过 · 最大横摇 ${(this.tsunami.peakRoll * 57.2958).toFixed(1)}° / 最大纵摇 ${(this.tsunami.peakPitch * 57.2958).toFixed(1)}°`,
           this.time);
       }
     }
 
     this.damage.update(dt, this.phys, this.field, this.particles, this.time);
-    // the ultra event: while the 30 m wave group is passing her, flooding
-    // advances no matter what (see DamageModel.update). Latched — the escort
-    // large waves replace the tier but must not lift the sentence.
-    if (this.tsunami.tier?.id === 'ultra' && this.tsunami.active) {
-      this.damage.ultraEvent = true;
-    }
-    this.damage.emitGreenWater(dt, this.phys, this.field, this.particles, this.time,
-      Math.max(this.phys.slam, bowPunch * 0.8));
     for (const e of this.damage.events) {
       if (!e._logged) { e._logged = true; this.hud.pushLog(e.msg, e.t); }
     }
@@ -523,36 +638,34 @@ class Game {
     // ambient wave field grows up to ~1.7× (field.agitation), while the
     // tsunami packet itself is untouched, so the mean sea level holds and
     // the event reads as one train pushing through a rising sea.
+    const waveStorm = this.tsunami.tier?.storm ?? 1;
     const stormTarget = this.damage.state === 'sinking' || this.damage.state === 'lost'
       ? 1
-      : this.tsunami.state === 'active' ? 1
-        : this.tsunami.state === 'inbound' ? 0.45 : 0;
+      : this.tsunami.state === 'active' ? waveStorm
+        : this.tsunami.state === 'inbound' ? Math.max(.42, .65 * waveStorm) : .42;
     this.storm += (stormTarget - this.storm) * (1 - Math.exp(-dt * 0.13));
-    this.field.agitation += (1 + this.storm * 0.7 - this.field.agitation)
+    this.field.agitation += (1 - this.field.agitation)
       * (1 - Math.exp(-dt * 0.13));
-    this.skySys.setStorm(this.storm);
+    const nightTarget=this.mode==='random'?this.randomSea.nightTarget:Number(this.manualNight);
+    const night=this.skySys.night+(nightTarget-this.skySys.night)*(1-Math.exp(-dt*.55));
+    this.skySys.time=this.time;this.skySys.setStorm(this.storm,night);
     this.ocean.setFog(this.skySys.scene.fog.color, this.skySys.fogDensity);
     this.rain.update(dt, this.camera.position, this.storm);
     // the cockpit glass only exists in the first-person bridge view
-    this.cockpit.show(this.rig.mode === 'bridge');
+    this.shipMesh.userData.periscope?.update(dt);
+    const cameraView=this.cameraView();
+    this.cockpit.show(this.rig.mode === 'bridge'&&!cameraView.bridgeOptic);
     // glass wetness = storm rain PLUS spray thrown against the windows as
     // she punches through wave faces — even on an otherwise calm day you
     // see the bow wave hit the glass
     this.cockpit.update(dt, Math.min(1, this.storm + bowPunch * 0.85), this.time);
 
     // ---- fx -------------------------------------------------------
-    const speed = this.phys.velocity.length();
-    // how rough it is right now: 0 in a calm sea, up to 1 during a tsunami.
-    // Drives spray volume and the size of the plumes off the bow.
-    const seaState = this.field.tsuActive
-      ? THREE.MathUtils.clamp(this.field.tsuHeight / 10, 0.35, 1) : 0;
-
-    this.hullFoam.update(this.time, this.field, this.shipMesh, speed, this.phys.slam);
-    this.wake.update(this.time, dt, this.field, this.shipMesh, speed);
-    this.propWash.update(this.time, dt, this.field, this.shipMesh, this.phys.throttle);
-    this.spray.update(dt, this.shipMesh, speed, this.phys.slam, this.field,
-      seaState, this.phys.velocity.y, bowPunch);
-    this.particles.update(dt, 0.6);
+    const speed = Math.hypot(this.phys.velocity.x, this.phys.velocity.z);
+    this.waterFX.update(this.time, dt, this.field, this.shipMesh, this.phys);
+    this.activeVessel.aircraft.update(dt,this.shipMesh,this.phys,this.field,this.particles);
+    this.islands.update(dt,this.field,this.shipMesh,this.particles,this.skySys.night);
+    this.particles.update(dt, 0.6,this.field);
 
     // punching into a wave face: shudder + thud, once per plunge
     if (bowPunch > 0.45 && this.time - (this._lastPunch || 0) > 0.9) {
@@ -564,13 +677,12 @@ class Game {
     // ---- camera / hud ---------------------------------------------
     // walk rig: first-person on the deck; keys steer the WALKER, not the ship
     const walking = this.rig.mode === 'walk';
-    this.input.walkMode = walking;
     if (walking) this.rig.walkStep(dt, this.input.keys, this.shipMesh, this.field);
-    this.rig.update(dt, this.shipMesh, this.field, this.tsunami.dir, speed);
+    this.rig.update(dt, this.shipMesh, this.field, this.tsunami.dir, speed,cameraView);
     this.input.update(dt);
     this.audio.update(dt, {
       speed, throttle: this.phys.throttle,
-      seaState: this.field.tsuActive ? this.field.tsuHeight : 1.2,
+      seaState: this.tsunami.active ? this.tsunami.height : this.field.significantSeaHeight,
     });
     this.hud.update(dt, this.hudState());
 
@@ -609,6 +721,8 @@ class Game {
       ship: this.phys, waveField: this.field, tsunami: this.tsunami,
       damage: this.damage, time: this.time,
       showHelp: this.showHelp, paused: this.paused,
+      mode:this.mode,night:this.manualNight,meteors:this.meteors,weapons:this.shipMesh.userData.weapons,
+      periscope:this.shipMesh.userData.periscope,aircraft:this.activeVessel.aircraft,
     };
   }
 
@@ -629,9 +743,15 @@ class Game {
   }
 
   render() {
+    this.solidWater.update(this.shipMesh);
+    document.getElementById('periscopeView').hidden=!this.shipMesh.userData.periscope?.mirrorView(this.rig.mode)||this.paused||this.showHelp||!this.hud.el.hud.classList.contains('on');
+    this.updateSearchlights();this.ocean.setSun(this.skySys.sunDir,this.skySys.sunLight.color);
     this.ocean.setCamDist(this.camera.position.distanceTo(this.phys.position));
     // grid follows the SHIP so the finest cells always sit at the waterline
     this.ocean.update(this.time, this.phys.position, this.field);
+    this.ocean.uniforms.uSunStrength.value = this.skySys.sunLight.intensity;
+    this.waterReflection.update(this.renderer, this.scene, this.camera,
+      [this.ocean.mesh,...Object.values(this.vessels).flatMap(v=>[v.waterFX.foam,v.waterFX.drops]),this.particles.points,this.rain.mesh]);
     this.composer ? this.composer.render() : this.renderer.render(this.scene, this.camera);
   }
 
@@ -642,6 +762,8 @@ class Game {
     this.renderer.setSize(w, h);
     this.composer?.setSize(w, h);
     this.bloom?.setSize(w, h);
+    this.waterReflection.resize(Math.ceil(w * 0.5), Math.ceil(h * 0.5));
+    for(const v of Object.values(this.vessels))v.waterFX.resize(h,this.renderer.getPixelRatio());
   }
 
   /**

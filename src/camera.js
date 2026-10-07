@@ -13,36 +13,27 @@
  * judging how far over she is going.
  */
 import * as THREE from 'three';
-import { deckHalfWidth, SHIP } from './ship.js';
+import { SHIP } from './carrier-layout.js';
+import { createDeckWalk } from './deck-walk.js';
+import {deckHeightAt} from './deck-surface.js';
+import {cameraModes} from './vessel-capabilities.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 // scratch for the "keep the lens out of the hull" test (orbit mode)
 const _qInv = new THREE.Quaternion();
 const _loc = new THREE.Vector3();
 
-/* Air-wall collision volumes on the deck (ship-local, metres): the walker
- * is pushed out of these. Island footprint + weapon mounts. */
-const DECK_BLOCKS = [
-  [29, 67, 18, 32],      // island (x0, x1, z0, z1)
-  [143.5, 148.5, -20.5, -14.5], [143.5, 148.5, 14.5, 20.5],  // bow CIWS
-  [-161, -155, 27.5, 34.5],                                  // stern CIWS
-  [133, 139, -22.5, -15.5], [133, 139, 15.5, 22.5],          // ESSM
-];
-// tractors and RIBs (circles: x, z, r)
-const DECK_PILLARS = [
-  [84, 26, 2.6], [-46, 34, 2.6], [-100, 30, 2.6], [30, -34, 2.6], [-130, 30, 2.6],
-  [-20, 34, 4], [-31, 34, 4],    // RIB boats
-];
+// Project the final camera position after interpolation and impact shake.
+const CLEARANCE = { orbit: 6, chase: 12, cinema: 22, bridge: 1.2, deck: 1.2, walk: 1.2 };
+export const HOME_ORBIT = Object.freeze({ radius: 440, theta: 0.72, phi: 1.12 });
 
 export class CameraRig {
-  constructor(camera) {
+  constructor(camera, vessel=SHIP) {
+    this.setVessel(vessel);
     this.camera = camera;
     this.mode = 'orbit';
 
-    this.radius = 620;
-    this.theta = -0.6;        // azimuth around the ship
-    this.phi = 1.12;          // polar (from +Y)
-    this.minRadius = 40;
+    Object.assign(this, this.home);
     this.maxRadius = 2600;
     this.minPhi = 0.18;
     this.maxPhi = 1.62;
@@ -51,12 +42,13 @@ export class CameraRig {
     this.smoothTarget = new THREE.Vector3();
     this.chasePos = new THREE.Vector3();
     this.chaseLook = new THREE.Vector3();
+    this.previousShipPosition=new THREE.Vector3();
+    this.translation=new THREE.Vector3();
     this.fov = 48;
     this.shake = 0;
     this._snap = false;       // set true by setMode; consumed by the next update
     // walk-mode state (ship-local): position on deck, facing, head bob
-    this.walkX = 40;
-    this.walkZ = 0;
+    [this.walkX,this.walkZ] = vessel.walkStart;
     this.walkYaw = 0;         // 0 = facing the bow (+x)
     this.walkPitch = 0;
     this.walkPhase = 0;
@@ -67,6 +59,14 @@ export class CameraRig {
     this._q = new THREE.Quaternion();
     this._e = new THREE.Euler();
     this._tmp = new THREE.Vector3();
+  }
+
+  setVessel(vessel) {
+    this.vessel=vessel;this.walkSurface=createDeckWalk(vessel);
+    if(this.mode&&!cameraModes(vessel).includes(this.mode))this.mode='orbit';
+    this.home={...HOME_ORBIT,radius:HOME_ORBIT.radius*vessel.length/SHIP.length};
+    this.minRadius=40*vessel.length/SHIP.length;
+    [this.walkX,this.walkZ]=vessel.walkStart;Object.assign(this,this.home);this._snap=true;
   }
 
   orbitBy(dx, dy) {
@@ -89,7 +89,7 @@ export class CameraRig {
   walkStep(dt, keys, shipObj, field) {
     // speed eases in and out (~0.25 s ramp): instant start/stop is what
     // made the first version of the walker feel like a sliding cursor
-    const sp = this.walkRun ? 7 : 3.2;
+    const sp = this.walkRun ? 35 : 9.6;
     let f = 0, s = 0;
     if (keys.has('w')) f += 1;
     if (keys.has('s')) f -= 1;
@@ -108,34 +108,9 @@ export class CameraRig {
     this.walkVZ += (tvz - this.walkVZ) * k;
     if (Math.abs(this.walkVX) < 0.01) this.walkVX = 0;
     if (Math.abs(this.walkVZ) < 0.01) this.walkVZ = 0;
-    this.walkX += this.walkVX * dt;
-    this.walkZ += this.walkVZ * dt;
-
-    // ---- air walls ---------------------------------------------------
-    this.walkX = THREE.MathUtils.clamp(this.walkX, -166, 170.8);
-    const side = this.walkZ >= 0 ? 1 : -1;
-    const rail = deckHalfWidth(this.walkX, side) - 0.9;
-    if (Math.abs(this.walkZ) > rail) {
-      this.walkZ = side * Math.max(0, rail);
-    }
-    for (const [x0, x1, z0, z1] of DECK_BLOCKS) {
-      if (this.walkX > x0 - 0.7 && this.walkX < x1 + 0.7 &&
-          this.walkZ > z0 - 0.7 && this.walkZ < z1 + 0.7) {
-        // push out along the shallowest penetration
-        const px = Math.min(this.walkX - x0, x1 - this.walkX);
-        const pz = Math.min(this.walkZ - z0, z1 - this.walkZ);
-        if (px < pz) this.walkX += (this.walkX - (x0 + x1) / 2 > 0 ? px + 0.7 : -(px + 0.7));
-        else this.walkZ += (this.walkZ - (z0 + z1) / 2 > 0 ? pz + 0.7 : -(pz + 0.7));
-      }
-    }
-    for (const [cx, cz, r] of DECK_PILLARS) {
-      const dx = this.walkX - cx, dz = this.walkZ - cz;
-      const d = Math.hypot(dx, dz);
-      if (d < r + 0.6 && d > 1e-4) {
-        this.walkX = cx + dx / d * (r + 0.6);
-        this.walkZ = cz + dz / d * (r + 0.6);
-      }
-    }
+    // One projection preserves BOTH the deck rail and all obstacle margins.
+    [this.walkX, this.walkZ] = this.walkSurface.projectDeckWalk(
+      this.walkX + this.walkVX * dt, this.walkZ + this.walkVZ * dt);
 
     // ---- camera ------------------------------------------------------
     const cam = this.camera;
@@ -147,10 +122,10 @@ export class CameraRig {
     const bob = Math.sin(this.walkPhase * 2) * 0.055 * gait
               + Math.sin(this.walkPhase * 0.5) * 0.008;
     const sway = Math.sin(this.walkPhase) * 0.02 * gait;
-    const eye = this._v.set(this.walkX, SHIP.deckY + 1.72 + bob, this.walkZ)
+    const eye = this._v.set(this.walkX, deckHeightAt(this.vessel,this.walkX) + 1.72 + bob, this.walkZ)
       .applyQuaternion(shipObj.quaternion).add(shipObj.position);
     // never under water — same rule as every rig
-    const wy = field.heightAt(eye.x, eye.z) + 1.2;
+    const wy = field.heightAt(eye.x, eye.z) + CLEARANCE.walk;
     if (eye.y < wy) eye.y = wy;
     cam.position.copy(eye);
     // attitude: ship's heel/pitch carried into the head, then yaw/pitch
@@ -170,6 +145,7 @@ export class CameraRig {
   }
 
   setMode(m) {
+    if(!cameraModes(this.vessel).includes(m))return false;
     this.mode = m;
     // Every mode must SNAP on the first frame after a switch. Without this the
     // rig lerps from wherever the previous camera was — e.g. orbit at 600 m
@@ -179,23 +155,32 @@ export class CameraRig {
     this._snap = true;
     if (m === 'chase') this._chaseInit = false;
     if (m === 'cinema') this._cineInit = false;
+    return true;
   }
 
   addShake(amount) {
     this.shake = Math.min(1.4, this.shake + amount);
   }
 
-  update(dt, shipObj, field, tsunamiDir, speed = 0) {
+  update(dt, shipObj, field, tsunamiDir, speed = 0,view={}) {
     this._t = (this._t || 0) + dt;
     const cam = this.camera;
     const shipPos = shipObj.position;
     this.target.copy(shipPos);
-    this.target.y += 8;
+    this.target.y += this.vessel.deckY*.4;
 
     // One-frame snap after a mode switch (see setMode). Consumed here so the
     // very next frame goes back to smooth damping.
     const snap = this._snap;
     this._snap = false;
+
+    // Translation is inherited exactly; damping only smooths relative framing.
+    // A world-space low-pass alone trails a small fast craft by speed / rate.
+    this.translation.copy(shipPos).sub(this.previousShipPosition);
+    if(!snap&&(this.mode==='orbit'||this.mode==='chase')){
+      cam.position.add(this.translation);this.chasePos.add(this.translation);this.smoothTarget.add(this.translation);
+    }
+    this.previousShipPosition.copy(shipPos);
 
     // damped follow of the look-at point (snaps with the camera, otherwise the
     // new view would be looking at wherever the old one was aimed)
@@ -216,7 +201,7 @@ export class CameraRig {
         );
         // never let the camera go under the waves
         const wanted = this.smoothTarget.clone().add(off);
-        const wy = field.heightAt(wanted.x, wanted.z) + 6;
+        const wy = field.heightAt(wanted.x, wanted.z) + CLEARANCE.orbit;
         if (wanted.y < wy) wanted.y = wy;
 
         // ...and never *inside* the ship. Two exclusion volumes in ship-local
@@ -240,9 +225,10 @@ export class CameraRig {
           return false;
         };
         // hull + flight deck + gallery band
-        const inHull = pushOutOf(0, 4, 0, 178, 27, 47);
-        // island tower incl. mast (footprint x 31..65, z 26..36, top ~58)
-        const inIsland = pushOutOf(48, 40, 25, 21, 25, 14);
+        const margin=this.vessel.length*.029;
+        const inHull = pushOutOf(0, this.vessel.deckY/2, 0, this.vessel.length/2+margin, (this.vessel.deckY+this.vessel.draft)/2+margin*.9, this.vessel.deckHalfWidth+margin*1.2);
+        const island = this.vessel.superstructure;
+        const inIsland = pushOutOf(island.x, island.centreY, island.z, island.length / 2 + margin*.7, (island.topY-this.vessel.deckY)/2+margin*.9, island.width / 2 + margin*.7);
         if (inHull || inIsland) {
           wanted.copy(_loc).applyQuaternion(q).add(shipPos);
         }
@@ -253,11 +239,11 @@ export class CameraRig {
         break;
       }
       case 'chase': {
-        const back = 300, up = 95;
+        const back = this.vessel.length*.88, up = this.vessel.length*.28;
         const wanted = shipPos.clone()
           .addScaledVector(fwd, -back)
           .addScaledVector(UP, up);
-        const wy = field.heightAt(wanted.x, wanted.z) + 12;
+        const wy = field.heightAt(wanted.x, wanted.z) + CLEARANCE.chase;
         if (wanted.y < wy) wanted.y = wy;
         // snap on the first frame after switching, otherwise the rig slides in
         // from wherever it happened to be
@@ -265,7 +251,7 @@ export class CameraRig {
         const kk = snap ? 1 : (1 - Math.exp(-dt * 2.4));
         this.chasePos.lerp(wanted, kk);
         cam.position.copy(this.chasePos);
-        cam.lookAt(this.smoothTarget.clone().addScaledVector(fwd, 120));
+        cam.lookAt(this.smoothTarget.clone().addScaledVector(fwd, this.vessel.length*.35));
         break;
       }
       case 'bridge': {
@@ -275,18 +261,19 @@ export class CameraRig {
         // deck toward the bow, which sits ~10° below the view axis and so
         // lands low in frame — you watch the deck rush and the stem part
         // the sea, exactly the reference view.
-        const local = new THREE.Vector3(55.4, 38.9, 25);
+        const local = new THREE.Vector3(...(view.bridgeOptic?view.bridgeEye:this.vessel.bridgeEye));
         const p = local.clone().applyQuaternion(q).add(shipPos);
         // One rule for every rig: THE LENS NEVER GOES UNDER. A mega-tsunami
         // face or the final sink can bury the bridge itself — without this
         // clamp the camera sits inside opaque water and the screen is black.
         // Clamped, the view skims the crest instead: a wash-over, not a
         // blackout.
-        const wy = field.heightAt(p.x, p.z) + 1.2;
+        const wy = field.heightAt(p.x, p.z) + CLEARANCE.bridge;
         if (p.y < wy) p.y = wy;
-        const look = new THREE.Vector3(600, 24, 19).applyQuaternion(q).add(shipPos);
-        if (snap) cam.position.copy(p);
-        else cam.position.lerp(p, 1 - Math.exp(-dt * 30));
+        const look = new THREE.Vector3(this.vessel.length*1.75, this.vessel.deckY+this.vessel.length*.0117, this.vessel.bridgeEye[2]).applyQuaternion(q).add(shipPos);
+        // A mounted eye inherits the ship's complete rigid transform. World
+        // position damping leaves it astern by v/30 and inside fast vessels.
+        cam.position.copy(p);
         cam.lookAt(look);
         break;
       }
@@ -295,14 +282,13 @@ export class CameraRig {
         // deck toward the bow. Slightly higher than eye height on purpose:
         // at exactly 1.8 m a few degrees of pitch dips the lens below the
         // deck plane ahead, which used to read as a black flash.
-        const local = new THREE.Vector3(-120, 22.4, -18);
+        const local = new THREE.Vector3(...this.vessel.deckEye);
         const p = local.clone().applyQuaternion(q).add(shipPos);
         // same never-underwater rule (see bridge)
-        const wy = field.heightAt(p.x, p.z) + 1.2;
+        const wy = field.heightAt(p.x, p.z) + CLEARANCE.deck;
         if (p.y < wy) p.y = wy;
-        const look = new THREE.Vector3(300, 14, -6).applyQuaternion(q).add(shipPos);
-        if (snap) cam.position.copy(p);
-        else cam.position.lerp(p, 1 - Math.exp(-dt * 30));
+        const look = new THREE.Vector3(this.vessel.length*.88, this.vessel.deckY-this.vessel.length*.0175, -this.vessel.beamWater*.148).applyQuaternion(q).add(shipPos);
+        cam.position.copy(p);
         cam.lookAt(look);
         break;
       }
@@ -326,7 +312,7 @@ export class CameraRig {
           .addScaledVector(stbd, 260)
           .add(new THREE.Vector3(0, 75, 0));
         // clearance for the curling lip, not just the surface underfoot
-        const wy = field.heightAt(wanted.x, wanted.z) + 22;
+        const wy = field.heightAt(wanted.x, wanted.z) + CLEARANCE.cinema;
         if (wanted.y < wy) wanted.y = wy;
         if (!this._cineInit) { this.chasePos.copy(wanted); this._cineInit = true; }
         const ck = snap ? 1 : (1 - Math.exp(-dt * 3.5));
@@ -384,8 +370,11 @@ export class CameraRig {
       this.shake *= Math.exp(-dt * 3.2);
     }
 
+    cam.position.y = Math.max(cam.position.y,
+      field.heightAt(cam.position.x, cam.position.z) + CLEARANCE[this.mode]);
+
     // FOV eases toward its speed-dependent target instead of snapping
-    const targetFov = this.fov + (firstPerson ? sp * 10 : sp * 3.5);
+    const targetFov = view.bridgeOptic?32:this.fov + (firstPerson ? sp * 10 : sp * 3.5);
     if (Math.abs(cam.fov - targetFov) > 0.02) {
       cam.fov += (targetFov - cam.fov) * (1 - Math.exp(-dt * 3.0));
       cam.updateProjectionMatrix();

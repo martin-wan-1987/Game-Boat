@@ -2,11 +2,14 @@
  * hud.js — instrument panel, engine-order telegraph, alert banner.
  */
 import * as THREE from 'three';
+import { TSUNAMI_TIERS } from './tsunami.js';
+import { viewport } from './viewport.js';
+import {cameraModes} from './vessel-capabilities.js';
 
 const $ = (id) => document.getElementById(id);
 
 export class Hud {
-  constructor({ onThrottle, onCamera, onTsunami }) {
+  constructor({ onThrottle, onCamera, onTsunami, onAnchor,onNight }) {
     this.onThrottle = onThrottle;
     this.onCamera = onCamera;
     this.onTsunami = onTsunami;
@@ -23,6 +26,7 @@ export class Hud {
       cams: $('cams'), log: $('log'),
       help: $('help'), pause: $('pause'),
       tsuBear: $('tsuBear'), tsuC: $('tsuC'), tsuHint: $('tsuHint'),
+      anchorButton: $('anchorBtn'), anchorStatus: $('anchorStatus'),
     };
     this.adiCtx = this.el.adi.getContext('2d');
     this.tsuCtx = this.el.tsuC.getContext('2d');
@@ -33,6 +37,8 @@ export class Hud {
     this._buildLeverTicks();
     this._bindLever();
     this._bindCams();
+    this.el.anchorButton.addEventListener('click', onAnchor);
+    $('nightBtn').addEventListener('click',onNight);
   }
 
   show(on = true) { this.el.hud.classList.toggle('on', on); }
@@ -56,27 +62,31 @@ export class Hud {
 
   _bindLever() {
     const el = this.el.lever;
-    let dragging = false;
+    let pointer = null;
     const setFromEvent = (e) => {
       const r = el.getBoundingClientRect();
-      const y = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+      const y = e.clientY - r.top;
       const f = THREE.MathUtils.clamp(1 - y / r.height, 0, 1);
       const v = -0.35 + f * 1.35;
       this.setThrottle(v);
       this.onThrottle?.(this.throttle);
     };
     el.addEventListener('pointerdown', (e) => {
-      dragging = true;
+      if(pointer!==null||!viewport.contains(e.clientX,e.clientY))return;
+      pointer = e.pointerId;
       el.setPointerCapture(e.pointerId);
       setFromEvent(e);
       e.preventDefault();
     });
-    el.addEventListener('pointermove', (e) => { if (dragging) { setFromEvent(e); e.preventDefault(); } });
-    el.addEventListener('pointerup', (e) => {
-      dragging = false;
-      try { el.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    el.addEventListener('pointermove', (e) => {
+      if(e.pointerId!==pointer)return;
+      if(!viewport.contains(e.clientX,e.clientY)){pointer=null;return;}
+      setFromEvent(e);e.preventDefault();
     });
-    el.addEventListener('pointercancel', () => { dragging = false; });
+    const release=()=>{pointer=null;};
+    for(const type of ['pointerup','pointercancel','lostpointercapture'])el.addEventListener(type,release);
+    for(const type of ['blur','safeareachange'])window.addEventListener(type,release);
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)release();});
   }
 
   setThrottle(v) {
@@ -103,12 +113,26 @@ export class Hud {
     this.el.cams.querySelectorAll('.c').forEach((b) => {
       b.addEventListener('click', () => this.onCamera?.(b.dataset.cam));
     });
-    document.querySelectorAll('#tsu .opt').forEach((b) => {
+    const options = $('waveOptions');
+    options.replaceChildren(...Object.values(TSUNAMI_TIERS).map(tier => {
+      const b = document.createElement('button');
+      b.type = 'button';b.className = 'opt ' + (tier.danger >= 0.7 ? 'l' : tier.danger >= 0.3 ? 'm' : 's');
+      b.dataset.tier = tier.id;b.title = tier.warn;
+      const name = document.createElement('span'),height = document.createElement('span');
+      name.className = 'nm';name.textContent = tier.label;
+      height.className = 'hh';height.textContent = (tier.hMin === tier.hMax ? tier.hMax : `${tier.hMin}–${tier.hMax}`) + ' m';
+      b.append(name,height);
       b.addEventListener('click', () => {
         if (b.classList.contains('dis')) return;
         this.onTsunami?.(b.dataset.tier);
       });
-    });
+      return b;
+    }));
+    $('waveKeys').textContent = '快捷键 ' + Object.values(TSUNAMI_TIERS).map(tier => tier.key).join(' / ');
+    $('helpWaves').replaceChildren(...Object.values(TSUNAMI_TIERS).map(tier => {
+      const row=document.createElement('div'),key=document.createElement('span'),label=document.createElement('span');
+      row.className='kk';key.textContent=tier.key;label.textContent=tier.label;row.append(key,label);return row;
+    }));
   }
 
   setCamera(mode) {
@@ -130,7 +154,20 @@ export class Hud {
     if (ui) this._uiAcc = 0;
 
     if (ui) {
-      this.el.speed.textContent = ship.speedKnots.toFixed(1);
+      for(const button of this.el.cams.querySelectorAll('[data-cam]'))button.hidden=!cameraModes(ship.vessel).includes(button.dataset.cam);
+      const random=s.mode==='random';
+      $('nightBtn').hidden=random;$('nightBtn').textContent=s.night?'黑夜 · 已开启':'黑夜 · 关闭';$('nightBtn').setAttribute('aria-pressed',String(s.night));
+      $('waveKeys').textContent=random?'海况自动生成 · 昼夜随机交替':'快捷键 '+Object.values(TSUNAMI_TIERS).map(t=>t.key).join(' / ');
+      for(const button of document.querySelectorAll('[data-tier]')){button.disabled=random;button.classList.toggle('dis',random);}
+      this.el.speed.textContent = (ship.vessel.speedUnit==='km/h'?Math.hypot(ship.velocity.x,ship.velocity.z)*3.6:ship.speedKnots).toFixed(1);
+      for(const [id,side] of [['portGunsBtn',-1],['starboardGunsBtn',1]]){
+        $(id).setAttribute('aria-pressed',String(s.weapons.selectedSide===side));
+      }
+      $('salvoBtn').textContent=s.weapons.salvoPending?'对齐后齐射':'齐射 G';
+      $('gunBearing').textContent=`${s.weapons.selectedSide<0?'左':'右'}舷 · ${Math.round(90+s.weapons.aimOffset*180/Math.PI)}°`;
+      $('periscopeBtn').setAttribute('aria-pressed',String(s.periscope?.raised??false));
+      $('periscopeBtn').textContent=s.periscope?.raised?'收起潜望镜 T':'开启潜望镜 T';
+      $('submarineStatus').textContent=s.periscope?.raised?'海面航行 · 舰岛视角进入潜望镜':'海面航行 · 潜望镜收起';
       let hdg = att.fwd ? Math.atan2(att.fwd.z, att.fwd.x) * 57.2958 : 0;
       hdg = (hdg + 360) % 360;
       this.el.hdg.textContent = String(Math.round(hdg)).padStart(3, '0');
@@ -139,9 +176,14 @@ export class Hud {
       const rollAbs = Math.abs(att.roll) * 57.2958;
       this.el.roll.className = 'v ' + (rollAbs > 27 ? 'bad' : rollAbs > 14 ? 'warn' : '');
       this.el.pitch.className = 'v ' + (Math.abs(att.pitch) * 57.2958 > 12 ? 'warn' : '');
-      this.el.wave.textContent = (waveField.tsuHeight || 1.2).toFixed(1);
-      this.el.anchor.textContent = ship.anchorDown ? `抛锚 ${Math.round(ship.anchorChain)}m` : '收起';
-      this.el.anchor.className = 'v ' + (ship.anchorDown ? 'good' : '');
+      this.el.wave.textContent = (tsunami.active ? tsunami.height : waveField.significantSeaHeight).toFixed(1);
+      const anchor = ship.anchor;
+      this.el.anchor.textContent = { stowed: '收起', lowering: '下放中', set: '已到底' }[anchor.phase];
+      this.el.anchor.className = 'v ' + (anchor.phase === 'set' ? 'good' : '');
+      this.el.anchorButton.disabled = anchor.phase === 'lowering';
+      this.el.anchorButton.textContent = { stowed: '抛锚', lowering: '正在抛锚…', set: '起锚' }[anchor.phase];
+      this.el.anchorStatus.textContent = anchor.phase === 'set' ? '锚链已经到底'
+        : anchor.phase === 'lowering' ? `等待 ${Math.ceil(anchor.remaining)} 秒` : '锚已收起';
       this.el.rudder.textContent = `${Math.round(-ship.rudderAngle * 57.2958)}°`;
 
       // damage meters
@@ -158,21 +200,24 @@ export class Hud {
 
     this.drawAdi(att, ship);
 
-    // tsunami alert
-    if (tsunami.active) {
+    // Incoming fragments and the wave share the existing, safe alert area.
+    if(s.meteors?.active){
+      const fragments=s.meteors.fragments.length,canIntercept=s.weapons.hasCIWS;
+      this.setAlert('陨石来袭',fragments&&canIntercept?`${fragments} 块碎石 ｜ 长按近防炮 V 自动拦截`:'主陨石正在坠落 ｜ 入海后形成 20–100 米海啸',2);
+      this.el.tsuBear.style.display='none';
+    } else if (tsunami.active) {
       const d = tsunami.distanceToCrest(ship.position);
       const tier = tsunami.tier;
       const bearing = tsunami.bearingFromBow(ship);
       const ab = Math.abs(bearing);
       const side = bearing < 0 ? '左' : '右';
       const where = ab < 12 ? '正前方' : ab < 35 ? `${side}前方` : ab < 70 ? `${side}舷侧` : '正横';
-      const lvl = tier.id === 'ultra' ? 3
-        : ab > 55 ? 3 : ab > 28 ? 2 : tier.id === 'large' ? 2
-        : tier.id === 'medium' ? 1 : 0;
+      const lvl = ab > 55 ? 3 : ab > 28 ? 2 : tier.danger >= 0.7 ? 2
+        : tier.danger >= 0.3 ? 1 : 0;
       this.setAlert(
         `${tier.label} · ${tsunami.height.toFixed(1)} m`,
         d > 0
-          ? `来袭方位 ${where} ${ab.toFixed(0)}° ｜ 距离 ${Math.round(d)} m ｜ ${Math.max(0, d / waveField.tsuSpeed).toFixed(0)} 秒后抵达`
+          ? `来袭方位 ${where} ${ab.toFixed(0)}° ｜ 距离 ${Math.round(d)} m ｜ ${Math.max(0, d / tier.speed).toFixed(0)} 秒后抵达`
           : `正在通过 ｜ 最大横摇 ${(tsunami.peakRoll * 57.2958).toFixed(1)}°`,
         lvl,
       );

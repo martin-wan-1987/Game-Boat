@@ -5,6 +5,7 @@
  */
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
+import { CloudLayer } from './atmosphere.js';
 
 export class SkySystem {
   constructor(renderer, scene, shadowSize = 2048) {
@@ -13,6 +14,13 @@ export class SkySystem {
 
     // --- atmosphere -------------------------------------------------
     this.sky = new Sky();
+    // Sky radiance and the directional sun share the scene's lighting scale.
+    // Apply this before both the visible sky and the environment bake.
+    this.sky.material.uniforms.skyRadiance = {value:.38};
+    this.nightUniform={value:0};this.sky.material.uniforms.uNight=this.nightUniform;
+    this.sky.material.fragmentShader = 'uniform float skyRadiance,uNight;\n' +
+      this.sky.material.fragmentShader.replace('gl_FragColor = vec4( retColor, 1.0 );',
+        'gl_FragColor = vec4(mix(retColor * skyRadiance,vec3(.028,.044,.074),uNight),1.0);');
     this.sky.scale.setScalar(450000);
     const u = this.sky.material.uniforms;
     u.turbidity.value = 6.5;
@@ -20,8 +28,8 @@ export class SkySystem {
     u.mieCoefficient.value = 0.005;
     u.mieDirectionalG.value = 0.82;
 
-    this.sunElevation = 26;
-    this.sunAzimuth = 118;
+    this.sunElevation = 21;
+    this.sunAzimuth = 225;
     scene.add(this.sky);
 
     // --- sun --------------------------------------------------------
@@ -29,7 +37,7 @@ export class SkySystem {
     // Strong, low-ish sun + little fill light = high contrast, long shadows.
     // This is what makes the ship read as a solid object instead of a flat
     // grey cut-out; the previous soft setup washed the horizon to white.
-    this.sunLight = new THREE.DirectionalLight(0xfff2dd, 2.9);
+    this.sunLight = new THREE.DirectionalLight(0xffedd5, 4.3);
     this.sunLight.castShadow = true;
     const s = this.sunLight.shadow;
     // wired to the quality preset (the QUALITY.shadow tiers were previously
@@ -52,7 +60,7 @@ export class SkySystem {
     // water bounce on the hull's underside and gallery structure, instead of
     // a generic dark void fill. Kept low: the Preetham sky outputs radiance
     // well above 1.0, so a "normal looking" fill washes materials out.
-    this.hemi = new THREE.HemisphereLight(0xbfd8f0, 0x1d4a52, 0.32);
+    this.hemi = new THREE.HemisphereLight(0xbfd8f0, 0x263e45, 0.40);
     scene.add(this.hemi);
 
     // --- fog --------------------------------------------------------
@@ -71,6 +79,7 @@ export class SkySystem {
     this.pmrem = new THREE.PMREMGenerator(renderer);
     this.pmrem.compileEquirectangularShader();
 
+    this.clouds=new CloudLayer(this.sunDir,this.nightUniform);scene.add(this.clouds.mesh);
     this.setSun(this.sunElevation, this.sunAzimuth);
   }
 
@@ -92,6 +101,7 @@ export class SkySystem {
     this.sunLight.target.position.copy(pos);
     this.sunLight.target.updateMatrixWorld();
     this.cubeCam.position.copy(pos);
+    this.clouds.mesh.position.copy(pos);
   }
 
   /** Bake the sky into a cube map (reflections) + PMREM (IBL). */
@@ -110,7 +120,7 @@ export class SkySystem {
     if (this._pmremRT) this._pmremRT.dispose();
     this._pmremRT = this.pmrem.fromCubemap(this.cubeRT.texture);
     s.environment = this._pmremRT.texture;
-    s.environmentIntensity = 0.42;
+    s.environmentIntensity = 0.64;
 
     s.fog = prevFog;
     s.background = prevBg;
@@ -155,11 +165,15 @@ export class SkySystem {
    * visible (fog rises only ~40%, not the old ×8.6 that read as pea soup
    * the instant a tsunami was fired).
    */
-  setStorm(t) {
+  get night(){return this.nightUniform.value;}
+  setStorm(t,night=this.night) {
     const k = THREE.MathUtils.clamp(t, 0, 1);
+    this.nightUniform.value=night;
     this._storm = k;
-    this.sunLight.intensity = 2.9 - k * 2.2;      // 2.9 -> 0.7
-    this.hemi.intensity = 0.32 + k * 0.12;        // storm overcast lifts ambient
+    this.clouds.update(this.time ?? 0,k);
+    this.sunLight.intensity = (4.3-k*2.0)*(1-night*.945);
+    this.sunLight.color.set(0xffedd5).lerp(new THREE.Color(.48,.66,1),night);
+    this.hemi.intensity = (0.40+k*0.12)*(1-night*.72);
     // heavy, dark overcast
     this.sky.material.uniforms.turbidity.value = 6.5 + k * 9.5;
     this.sky.material.uniforms.rayleigh.value = 2.2 + k * 0.5;
@@ -172,9 +186,10 @@ export class SkySystem {
     if (this.fogColor) {
       const storm = new THREE.Color(0.34, 0.39, 0.46);
       this.scene.fog.color.copy(this.fogColor).lerp(storm, k);
+      this.scene.fog.color.lerp(new THREE.Color(.035,.055,.09),night);
     }
     if (this.scene.environmentIntensity !== undefined) {
-      this.scene.environmentIntensity = 0.42 - k * 0.26;
+      this.scene.environmentIntensity = (0.64-k*.16)*(1-night*.92);
     }
   }
 

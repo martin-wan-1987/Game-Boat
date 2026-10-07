@@ -50,7 +50,6 @@ for (const angleDeg of [0, 30, 45, 90]) {
         t += DT;
         // mirror the game loop: damage feeds flooding back into the physics
         dmg.update(DT, ship, field, nullParticles, t);
-        dmg.emitGreenWater(DT, ship, field, nullParticles, t, ship.slam);
         const a = ship.attitude;
         mr = Math.max(mr, Math.abs(a.roll));
         mp = Math.max(mp, Math.abs(a.pitch));

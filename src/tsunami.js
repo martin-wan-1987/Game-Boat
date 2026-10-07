@@ -1,180 +1,70 @@
-/**
- * tsunami.js — tsunami event manager.
- *
- * The wave always arrives **over the bow**: it is spawned ahead of the ship's
- * current heading and travels straight at her, which is also the honest
- * deep-water picture (a long, non-dispersive swell, not a breaking wall —
- * those only exist in shallow water near shore).
- *
- * Nothing here decides whether the ship survives. The wave is handed to the
- * physics, and the physics decides.
- */
+/** Event placement, independent of wave sampling and vessel type. */
 import * as THREE from 'three';
+const PI=Math.PI;
+export const SEA_STATE={hs:5.6,peakLength:92,spread:.52,
+  directions:[{angle:0,weight:.42},{angle:PI,weight:.26},{angle:PI/2,weight:.16},{angle:-PI/2,weight:.16}]};
+export const TSUNAMI_TIERS=Object.fromEntries(Object.entries({
+  rogue:{label:'疯狗浪',hMin:4.7,hMax:5.3,danger:.4,thickness:76,spacing:98,speed:22,distance:100,lateralWidth:1300,storm:.68,
+    groups:[{bearing:0,count:8,scale:1,decay:.97},{bearing:PI,count:6,scale:.95,decay:.97,phase:.5},{bearing:PI/2,count:6,scale:.82,decay:.97,phase:.25},{bearing:-PI/2,count:6,scale:.82,decay:.97,phase:.75}],
+    warn:'四面密集碎浪，约 5 米浪头，保持舵效'},
+  large:{label:'大型海啸',hMin:12,hMax:15,danger:.75,thickness:190,spacing:280,speed:24,distance:100,lateralWidth:2200,storm:.85,
+    groups:[{bearing:0,count:3,scale:1,decay:.94},{bearing:PI,count:1,scale:.78,decay:1,phase:3},{bearing:PI/2,count:2,scale:.6,decay:.9,phase:-.5,stride:2},{bearing:-PI/2,count:2,scale:.6,decay:.9,phase:.5,stride:2}],
+    warn:'十几米厚浪组成一组，侧后方伴随较低浪峰'},
+  broad:{label:'30 米大浪',hMin:30,hMax:30,danger:.7,thickness:210,spacing:340,speed:18,distance:100,lateralWidth:2500,storm:.55,
+    groups:[{bearing:0,count:3,scale:1,decay:.92},{bearing:PI,count:1,scale:.67,decay:1,phase:3},{bearing:PI/2,count:2,scale:.6,decay:.95,phase:-.5,stride:2},{bearing:-PI/2,count:2,scale:.6,decay:.95,phase:.5,stride:2}],
+    warn:'210 米厚浪，前缘距船头 100 米；两侧伴随 17–18 米浪'},
+}).map(([id,tier],i)=>[id,{id,key:String(i+1),...tier}]));
 
-export const TSUNAMI_TIERS = {
-  // Periods are tuned so the *encounter* period (Te = L / (c + V cos mu)) lands
-  // in dangerous company with this hull's natural periods — roll ~12.9 s,
-  // pitch ~6.3 s. Because the train comes over the bow, keeping way on pushes
-  // Te down and away from roll resonance, while slowing down walks her
-  // straight into it. That tension is the whole game.
-  //
-  // `crests` now describes the size of the *wave group*: a big tsunami is not
-  // one wave, it is a leading wall followed by several medium and small waves.
-  small: {
-    id: 'small', label: '小型海啸', hMin: 2, hMax: 3,
-    period: 8.0, distance: 520, crests: 5,
-    warn: '轻微涌浪，几乎无感',
-  },
-  medium: {
-    id: 'medium', label: '中型海啸', hMin: 6, hMax: 7,
-    period: 10.0, distance: 680, crests: 6,
-    warn: '船体明显纵摇，注意保持航速',
-  },
-  large: {
-    id: 'large', label: '大型海啸', hMin: 11, hMax: 15,
-    period: 12.0, distance: 850, crests: 7,
-    warn: '危险！可能横摇失稳甚至倾覆',
-  },
-  // THE water wall. ONE single crest, 100-150 m tall and deliberately THIN
-  // (short period -> narrow face): she rams it, punches THROUGH, and the
-  // buoyancy spike on the way through flings her into the air. What happens
-  // when she comes back down is a roll of the dice — see DamageModel's
-  // landing roll. Then — guaranteed, slowly — she goes down.
-  ultra: {
-    id: 'ultra', label: '超级巨型海啸', hMin: 100, hMax: 150,
-    period: 6.5, distance: 950, crests: 1,
-    speed: 52,                // m/s: a wall with purpose — 950 m in ~18 s
-    followups: 0,
-    warn: '灭顶之灾 · 她挺不过这一场',
-  },
-};
-
+const forward=new THREE.Vector3(),side=new THREE.Vector3();
+export function hullExtent(ship,dx,dz){
+  forward.set(1,0,0).applyQuaternion(ship.quaternion);side.set(0,0,1).applyQuaternion(ship.quaternion);
+  return Math.abs(forward.x*dx+forward.z*dz)*ship.vessel.length/2
+    +Math.abs(side.x*dx+side.z*dz)*ship.vessel.beamWater/2;
+}
 export class TsunamiManager {
-  constructor(field) {
-    this.field = field;
-    this.state = 'idle';      // idle | inbound | active | clearing
-    this.tier = null;
-    this.height = 0;
-    this.dir = new THREE.Vector3(1, 0, 0);
-    this.tStart = 0;
-    this.peakRoll = 0;
-    this.peakPitch = 0;
-    this.worstUp = 1;
-    this.rollHistory = [];
-    this.time = 0;
+  constructor(field){this.field=field;this.state='idle';this.tier=null;this.height=0;this.dir=new THREE.Vector3(1,0,0);this.reset();}
+  reset(){this.state='idle';this.peakRoll=0;this.peakPitch=0;this.worstUp=1;this.rollHistory=[];this.field.clearPackets();}
+  get active(){return this.state==='inbound'||this.state==='active';}
+  get danger(){return this.tier?.danger??0;}
+  distanceToCrest(position){return this.active?this.field.distanceToCrest(position.x,position.z):Infinity;}
+  trigger(id,ship,time){
+    const tier=TSUNAMI_TIERS[id];if(!tier)return null;
+    return this.triggerSpec(tier,ship,time);
   }
-
-  get active() { return this.state === 'inbound' || this.state === 'active'; }
-
-  /** Distance from the ship to the leading crest (m, may go negative). */
-  distanceToCrest(shipPos) {
-    if (!this.active) return Infinity;
-    return this.field.distanceToCrest(shipPos.x, shipPos.z);
+  triggerSpec(tier,ship,time,{height=tier.hMin+Math.random()*(tier.hMax-tier.hMin),heading=ship.heading,epicentre=null}={}){
+    this.reset();this.tier=tier;this.height=height;
+    this.dir.set(Math.cos(heading),0,Math.sin(heading));
+    const origin=ship.localToWorld(new THREE.Vector3(),new THREE.Vector3());
+    // Schedule secondary crests between primary crests. Opposing packets
+    // must not coincide into an unintended 50+ m combined crest. The
+    // first main front keeps its exact 100 m gap from the projected bow.
+    const mainOffset=hullExtent(ship,this.dir.x,this.dir.z)+tier.thickness/2+tier.distance;
+    const inputs=epicentre?Array.from({length:tier.count},(_,i)=>({kind:'radial',x:epicentre.x,z:epicentre.z,
+      dirX:1,dirZ:0,height:height*tier.decay**i,thickness:tier.thickness,lateralWidth:tier.lateralWidth,speed:tier.speed,
+      delay:i*tier.spacing/tier.speed})):tier.groups.flatMap(group=>Array.from({length:group.count},(_,index)=>{
+      const angle=heading+group.bearing,dx=Math.cos(angle),dz=Math.sin(angle);
+      const thickness=tier.thickness,offset=mainOffset+((group.phase??0)+index*(group.stride??1))*tier.spacing;
+      return {x:origin.x+dx*offset,z:origin.z+dz*offset,dirX:dx,dirZ:dz,
+        height:this.height*group.scale*group.decay**index,thickness,lateralWidth:tier.lateralWidth,speed:tier.speed};
+    }));
+    this.field.replacePackets(inputs);
+    if(epicentre)this.dir.copy(epicentre).sub(origin).setY(0).normalize();
+    this.state='inbound';this.tStart=time;return tier;
   }
-
-  /**
-   * Fire a tsunami over the bow.
-   * @param {string} tierId  small | medium | large
-   * @param {object} ship    {position, heading}
-   */
-  trigger(tierId, ship, time) {
-    const tier = TSUNAMI_TIERS[tierId];
-    if (!tier) return null;
-    this.tier = tier;
-    this.height = tier.hMin + Math.random() * (tier.hMax - tier.hMin);
-
-    // Arrival angle off the bow. A wave dead over the bow mostly pitches you;
-    // the danger is when it arrives quartering, because that is when the
-    // righting arm actually gets tested. Refraction plus wherever the ship
-    // happens to be pointing at the moment of arrival give a spread, weighted
-    // so most waves come over the bow and the bad ones are the exception.
-    const r = Math.random();
-    let off;
-    if (r < 0.62) off = (Math.random() - 0.5) * 0.36;            //  +-10 deg
-    else if (r < 0.90) off = 0.26 + Math.random() * 0.36;        //  15-35 deg
-    else off = 0.70 + Math.random() * 0.50;                      //  40-69 deg
-    off *= Math.random() < 0.5 ? -1 : 1;
-
-    const hdg = ship.heading + off;
-    this.dir.set(Math.cos(hdg), 0, Math.sin(hdg));
-    this.offBow = Math.abs(off);
-
-    this.field.spawnTsunami({
-      x: ship.position.x, z: ship.position.z,
-      dirX: this.dir.x, dirZ: this.dir.z,
-      height: this.height,
-      period: tier.period * (0.92 + Math.random() * 0.18),
-      distance: tier.distance,
-      crests: tier.crests,
-      profile: tier.profile || null,   // ultra: sustained group, no decay
-      speed: tier.speed || null,       // ultra: explicit wall speed
-    });
-    this.field.tsuLife = 0;
-    this.followups = tier.followups || 0;
-
-    this.state = 'inbound';
-    this.tStart = time;
-    this.lastTriggerT = time;
-    this.peakRoll = 0; this.peakPitch = 0; this.worstUp = 1;
-    this.rollHistory.length = 0;
-    return tier;
+  bearingFromBow(ship){
+    forward.set(1,0,0).applyQuaternion(ship.quaternion);side.set(0,0,1).applyQuaternion(ship.quaternion);
+    return Math.atan2(this.dir.dot(side),this.dir.dot(forward))*180/PI;
   }
-
-  /**
-   * Bearing of the incoming wave relative to the bow, in degrees.
-   * Negative = coming from the port bow, positive = starboard bow.
-   */
-  bearingFromBow(ship) {
-    const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(ship.quaternion);
-    const stbd = new THREE.Vector3(0, 0, 1).applyQuaternion(ship.quaternion);
-    const fx = -this.dir.x, fz = -this.dir.z;      // direction the wave comes FROM
-    return Math.atan2(fx * stbd.x + fz * stbd.z, fx * fwd.x + fz * fwd.z)
-      * 57.2958;
-  }
-
-  update(dt, time, ship, shipState) {
-    this.time = time;
-    if (!this.active) return;
-    const dist = this.distanceToCrest(ship.position);
-
-    if (this.state === 'inbound') {
-      if (dist < 0) this.state = 'active';
-    } else if (this.state === 'active') {
-      // escort waves fire WHILE the event is live — waiting for the whole
-      // multi-km group to clear meant they arrived after she had already
-      // gone down. Each replaces the remaining tail with a fresh large
-      // wave train a fresh arrival angle.
-      if (this.followups > 0 && dist < -300 && time - this.lastTriggerT > 30 && ship) {
-        this.followups--;
-        const pending = this.followups;   // trigger() would reset it to 0
-        this.trigger('large', { position: ship.position, heading: ship.heading }, time);
-        this.followups = pending;
-        this.msg = '接续巨浪袭来';
-        return;
-      }
-      // the train has run past once the front is a long way astern
-      const span = this.field.tsuWidth * 2 + 700;
-      if (dist < -span) {
-        this.state = 'clearing';
-        this.field.tsuActive = false;
-        this.clearingAt = time;
-      }
-    } else if (this.state === 'clearing') {
-      if (time - this.clearingAt > 4) this.state = 'idle';
-    }
-
-    const a = shipState.attitude;
-    this.peakRoll = Math.max(this.peakRoll, Math.abs(a.roll));
-    this.peakPitch = Math.max(this.peakPitch, Math.abs(a.pitch));
-    this.worstUp = Math.min(this.worstUp, a.up.y);
-    this.rollHistory.push(a.roll);
-    if (this.rollHistory.length > 240) this.rollHistory.shift();
-  }
-
-  /** Warning level 0..1 used for HUD colour + alarms. */
-  get danger() {
-    if (!this.tier) return 0;
-    const base = this.tier.id === 'large' ? 0.75 : this.tier.id === 'medium' ? 0.4 : 0.15;
-    return base;
+  update(dt,time,ship,state){
+    this.time=time;if(this.state==='idle')return;
+    const origin=ship.localToWorld(new THREE.Vector3(),new THREE.Vector3());
+    const distances=this.field.packets.map(p=>({p,d:p.distanceToCrest(origin.x,origin.z,this.field.time),
+      extent:p.radial?Math.hypot(ship.vessel.length,ship.vessel.beamWater)/2:hullExtent(ship,p.dx,p.dz),
+      outsideLateral:!p.radial&&Math.abs(p.coordinates(origin.x,origin.z,this.field.time)[1])>p.lateral+hullExtent(ship,-p.dz,p.dx)}));
+    if(this.state==='inbound'&&distances.some(({p,d,extent})=>this.field.time>=p.t0&&d<p.leadingExtent+extent))this.state='active';
+    if(this.state==='active'&&distances.every(({p,d,extent,outsideLateral})=>outsideLateral||d < -p.trailingExtent-extent)){this.state='clearing';this.clearingAt=time;}
+    if(this.state==='clearing'&&time-this.clearingAt>4)this.state='idle';
+    const a=state.attitude;this.peakRoll=Math.max(this.peakRoll,Math.abs(a.roll));this.peakPitch=Math.max(this.peakPitch,Math.abs(a.pitch));
+    this.worstUp=Math.min(this.worstUp,a.up.y);this.rollHistory.push(a.roll);if(this.rollHistory.length>240)this.rollHistory.shift();
   }
 }

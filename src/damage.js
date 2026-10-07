@@ -9,15 +9,20 @@
  * burns, and goes down over about a minute.
  */
 import * as THREE from 'three';
+import { SHIP } from './carrier-layout.js';
+const STRUCTURAL_LIMITS={rollElastic:24,rollFailure:38,pitchElastic:12};
 
 export class DamageModel {
-  constructor() {
+  constructor(vessel=SHIP) {
+    this.vessel=vessel;
+    this.limits={...STRUCTURAL_LIMITS,...vessel.structural};
     this.integrity = 100;      // 0..100
     this.flood = 0;            // 0..1
     this.listBias = 0;
     this.fires = [];           // {local:Vector3, intensity, kind}
     this.state = 'ok';         // ok | damaged | flooding | sinking | lost
     this.lostAt = 0;
+    this.underT = 0;
     this.deckAwashTime = 0;
     this.slamAccum = 0;
     this.rollAccum = 0;
@@ -25,6 +30,7 @@ export class DamageModel {
     this.emberAcc = 0;
     this.events = [];          // human-readable log
     this._v = new THREE.Vector3();
+    this._lossPoint = new THREE.Vector3(...vessel.lossPoint);
     this._lastFireSpawn = 0;
   }
 
@@ -33,15 +39,25 @@ export class DamageModel {
     this.fires.length = 0; this.state = 'ok';
     this.deckAwashTime = 0; this.slamAccum = 0; this.rollAccum = 0;
     this.events.length = 0;
-    this.ultraEvent = false;
     this.underT = 0;
-    this._wallFlew = false;
-    this._wallLanded = false;
+    this.lostAt = 0;
+    this._lastFireSpawn = 0;
+    this.smokeAcc = 0;
+    this.emberAcc = 0;
   }
 
   log(msg, t) {
     this.events.push({ msg, t });
     if (this.events.length > 40) this.events.shift();
+  }
+
+  impact(energy,local,time,mass){
+    const loss=100*-Math.expm1(-energy/(mass*80));
+    this.integrity=Math.max(0,this.integrity-loss);
+    if(this.state==='ok')this.state='damaged';
+    if(this.integrity<35)this.flood=Math.min(1,this.flood+(35-this.integrity)/35*.07);
+    this.fires.push({local:local.clone(),intensity:Math.min(.7,loss/30),kind:'deck'});
+    this.log(`陨石碎块命中 · 完整度 -${loss.toFixed(1)}`,time);
   }
 
   /**
@@ -55,35 +71,6 @@ export class DamageModel {
     const att = ship.attitude;
     const rollDeg = Math.abs(att.roll) * 57.2958;
     const pitchDeg = Math.abs(att.pitch) * 57.2958;
-
-    // ---- the ultra event: she is going down -------------------------
-    // While the 30 m wave group is passing, flooding advances no matter how
-    // she rides it. This is the "guaranteed, but slow" sink: ~0.0075/s of
-    // irreducible flooding puts her under over roughly two minutes — long
-    // enough to walk the camera rigs around a dying ship. Normal mechanisms
-    // still stack on top.
-    if (this.ultraEvent && this.state !== 'lost') {
-      this.flood = Math.min(1, this.flood + dt * 0.0075);
-      if (this.state === 'ok') this.state = 'flooding';
-    }
-
-    // ---- the mega-wall landing roll ---------------------------------
-    // She punched through the wall and was flung into the air. When a
-    // 100 000 t hull comes back down onto the sea, the hull either holds
-    // (she bobs back up — the likelier outcome, ~65%) or the structure
-    // lets go and she starts going down by the bow immediately (~35%).
-    // Either way the ultra flooding floor finishes the story slowly.
-    if (this.ultraEvent && !this._wallLanded && ship.velocity.y < -8 && this._wallFlew) {
-      this._wallLanded = true;
-      if (Math.random() < 0.35) {
-        this.flood = Math.max(this.flood, 0.62);
-        this.integrity = Math.min(this.integrity, 34);
-        this.log('着水冲击 · 船体结构崩裂，大量进水', time);
-      } else {
-        this.log('着水冲击 · 船体扛住了', time);
-      }
-    }
-    if (this.ultraEvent && ship.velocity.y > 6) this._wallFlew = true;
 
     // ---- slamming damage -----------------------------------------
     // thresholded: a 1.5 m sea must do exactly nothing
@@ -99,25 +86,25 @@ export class DamageModel {
     }
 
     // ---- damage from extreme roll ---------------------------------
-    if (rollDeg > 24) {
-      const dmg = (rollDeg - 24) * dt * 0.14;
+    if (rollDeg > this.limits.rollElastic) {
+      const dmg = (rollDeg - this.limits.rollElastic) * dt * 0.14;
       this.integrity -= dmg;
       this.rollAccum += dmg;
     }
-    if (pitchDeg > 12) {
-      this.integrity -= (pitchDeg - 12) * dt * 0.06;
+    if (pitchDeg > this.limits.pitchElastic) {
+      this.integrity -= (pitchDeg - this.limits.pitchElastic) * dt * 0.06;
     }
     // structural failure if roll exceeds 38° (beyond design limit)
-    if (rollDeg > 38) {
-      this.integrity -= (rollDeg - 38) * dt * 0.45;
+    if (rollDeg > this.limits.rollFailure) {
+      this.integrity -= (rollDeg - this.limits.rollFailure) * dt * 0.45;
       this.flood = Math.min(1, this.flood + dt * 0.035);
     }
 
     // ---- deck edge immersion -> progressive flooding --------------
     // flight deck is 20 m up and 39 m out: she ships water past ~27 deg
-    const deckEdgeAngle = Math.atan2(20, 39) * 57.2958;   // ~27.1 deg
+    const deckEdgeAngle = Math.atan2(this.vessel.downflood.height, this.vessel.downflood.halfBeam) * 57.2958;   // ~27.1 deg
     const awashThreshold = deckEdgeAngle * 0.85;            // ~23.0 deg
-    if (rollDeg > awashThreshold) {
+    if (!this.vessel.downflood.sealed && rollDeg > awashThreshold) {
       this.deckAwashTime += dt;
       // rate grows with how far past the edge we are
       const rate = (rollDeg - awashThreshold) / 32;
@@ -136,16 +123,11 @@ export class DamageModel {
       }
     } else {
       this.deckAwashTime = Math.max(0, this.deckAwashTime - dt * 0.35);
-      // some of it drains back out — but never against the ultra event,
-      // whose floor must actually accumulate (it was being cancelled to a
-      // net +0.001/s here, and she would never sink)
-      if (!this.ultraEvent) {
-        this.flood = Math.max(0, this.flood - dt * 0.010);
-      }
+      this.flood = Math.max(0, this.flood - dt * 0.010);
     }
 
     // ---- capsize ---------------------------------------------------
-    if (ship.capsized && this.state !== 'lost') {
+    if (!this.vessel.downflood.sealed && ship.capsized && this.state !== 'sinking' && this.state !== 'lost') {
       this.state = 'sinking';
       this.flood = Math.min(1, this.flood + 0.45);
       this.log('倾覆！弃船！', time);
@@ -172,11 +154,11 @@ export class DamageModel {
     // counts as lost once she has stayed under for six continuous seconds
     // AND is no longer fighting her way back up.
     if (this.state !== 'lost') {
-      const deckWorld = new THREE.Vector3(0, 20, 0)
-        .applyQuaternion(ship.quaternion).add(ship.position);
+      const deckWorld = ship.localToWorld(this._lossPoint, this._v);
       const sea = waveField.heightAt(deckWorld.x, deckWorld.z);
-      if (deckWorld.y < sea + 1.0 && ship.velocity.y < 2.0) {
-        this.underT = (this.underT || 0) + dt;
+      const downflooding=!this.vessel.downflood.sealed||this.flood>.18;
+      if (downflooding && deckWorld.y < sea + 1.0 && ship.velocity.y < 2.0) {
+        this.underT += dt;
         if (this.underT > 6) {
           this.state = 'lost';
           this.lostAt = time;
@@ -215,25 +197,25 @@ export class DamageModel {
 
   igniteDeck(intensity = 0.55) {
     if (this.fires.length > 8) return;
+    const x = THREE.MathUtils.randFloat(-this.vessel.length*.43, this.vessel.length*.43);
     const local = new THREE.Vector3(
-      THREE.MathUtils.randFloat(-150, 150),
-      20.6,
-      THREE.MathUtils.randFloat(-36, 36),
+      x,
+      this.vessel.deckY+.6,
+      THREE.MathUtils.randFloat(-this.vessel.deckHalfWidthAt(x,-1)*.84, this.vessel.deckHalfWidthAt(x,1)*.84),
     );
     this.fires.push({ local, intensity, kind: 'deck' });
     // and something below decks, which vents through the hull
     if (Math.random() < 0.6) {
       this.fires.push({
         local: new THREE.Vector3(
-          THREE.MathUtils.randFloat(-120, 60), 24,
-          THREE.MathUtils.randFloat(26, 37)),
+          this.vessel.superstructure.x, this.vessel.superstructure.topY,
+          this.vessel.superstructure.z),
         intensity: intensity * 0.8, kind: 'interior',
       });
     }
   }
 
   emitSmoke(dt, ship, waveField, particles, time) {
-    const q = ship.quaternion;
     const p = this._v;
     for (const f of this.fires) {
       const rate = 14 * f.intensity;
@@ -241,7 +223,7 @@ export class DamageModel {
       const n = Math.floor(this.smokeAcc);
       this.smokeAcc -= n;
       for (let i = 0; i < n; i++) {
-        p.copy(f.local).applyQuaternion(q).add(ship.position);
+        ship.localToWorld(f.local, p);
         const jitter = f.kind === 'deck' ? 7 : 3;
         particles.spawn(
           p.x + (Math.random() - 0.5) * jitter,
@@ -260,7 +242,7 @@ export class DamageModel {
         const m = Math.floor(this.emberAcc);
         this.emberAcc -= m;
         for (let i = 0; i < m; i++) {
-          p.copy(f.local).applyQuaternion(q).add(ship.position);
+          ship.localToWorld(f.local, p);
           particles.spawn(
             p.x + (Math.random() - 0.5) * 6, p.y + 1, p.z + (Math.random() - 0.5) * 6,
             (Math.random() - 0.5) * 7, 4 + Math.random() * 7, (Math.random() - 0.5) * 7,
@@ -271,30 +253,4 @@ export class DamageModel {
     }
   }
 
-  /** Water pouring over the bow when she buries — a huge visual. */
-  emitGreenWater(dt, ship, waveField, particles, time, slam) {
-    if (slam < 0.25) return;
-    const q = ship.quaternion;
-    const acc = slam * 220 * dt;
-    this._gwAcc = (this._gwAcc || 0) + acc;
-    const n = Math.floor(this._gwAcc);
-    this._gwAcc -= n;
-    for (let i = 0; i < n; i++) {
-      const local = new THREE.Vector3(
-        168 - Math.random() * 60,
-        21 + Math.random() * 2,
-        (Math.random() - 0.5) * 70,
-      );
-      const p = local.applyQuaternion(q).add(ship.position);
-      particles.spawn(
-        p.x, p.y, p.z,
-        (Math.random() - 0.5) * 5,
-        2 + Math.random() * 6,
-        (Math.random() - 0.5) * 5,
-        1.2 + Math.random() * 1.6,
-        6 + Math.random() * 8,
-        0,
-      );
-    }
-  }
 }

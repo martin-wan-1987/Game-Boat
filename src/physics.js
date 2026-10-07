@@ -14,26 +14,36 @@
  * than scripted.
  */
 import * as THREE from 'three';
-import { SHIP } from './ship.js';
+import { SHIP } from './carrier-layout.js';
+import { Anchor } from './anchor.js';
+import { operatingWaterlineY,pressureIntegral } from './hull-loft.js';
+import {propulsionForce,propulsionSpeedLimit} from './propulsion-envelope.js';
 
 const RHO = 1025;          // sea water kg/m^3
 const G = 9.81;
 const DEPTH = 150;         // sea floor depth (m) — for anchoring
+export const FLEET_BUOYANCY=1.5;
 
 export class ShipPhysics {
   constructor(patches, opts = {}) {
+    this.vessel = opts.vessel ?? SHIP;
+    const spec=this.vessel, dynamics=spec.dynamics;
+    this.buoyancyScale=spec.buoyancyScale??1;
     this.patches = patches;
-    this.mass = opts.mass ?? SHIP.mass;
+    // A step's surface samples are scratch, shared by pressure and drag.
+    // Closed-body pressure needs a common gauge before face integration.
+    this._surfaceSamples=new Float64Array(patches.length*10);
+    this.calibrate(patches, opts.mass);
     // A real hull is never perfectly symmetric — a small permanent list both
     // looks right and, more importantly, seeds parametric rolling. On a
     // perfectly symmetric hull with a perfectly symmetric wave the roll
     // instability sits at an exact equilibrium and never grows.
-    this.cg = new THREE.Vector3(opts.cgX ?? 3.0, opts.cgY ?? 0, opts.cgZ ?? 0.15);
+    this.cg = new THREE.Vector3(opts.cgX ?? spec.cg[0], opts.cgY ?? spec.cg[1], opts.cgZ ?? spec.cg[2]);
 
     // inertia about the CG, local frame (x fwd, y up, z stbd)
-    const kx = opts.gyradiusRoll ?? 20.5;
-    const ky = opts.gyradiusYaw ?? 94;
-    const kz = opts.gyradiusPitch ?? 95;
+    const kx = opts.gyradiusRoll ?? spec.gyradiusRoll;
+    const ky = opts.gyradiusYaw ?? spec.gyradiusYaw;
+    const kz = opts.gyradiusPitch ?? spec.gyradiusPitch;
     this.inertia = new THREE.Vector3(
       this.mass * kx * kx,
       this.mass * ky * ky,
@@ -46,6 +56,10 @@ export class ShipPhysics {
     // added mass / inertia of the surrounding water
     this.addedMassLin = 0.18;
     this.addedMassAng = 0.22;
+    // Radiation damping of the heave mode, expressed as a fraction of
+    // critical damping. This dissipates rebound energy without changing
+    // hydrostatic pressure, weight, propulsion or prescribing hull motion.
+    this.heaveDampingRatio = opts.heaveDampingRatio ?? dynamics.heaveDampingRatio ?? 1.2;
 
     this.position = new THREE.Vector3();
     this.quaternion = new THREE.Quaternion();
@@ -56,10 +70,7 @@ export class ShipPhysics {
     this.throttle = 0;          // -0.35 .. 1
     this.rudder = 0;            // -1 .. 1 (command)
     this.rudderAngle = 0;       // actual, rate limited
-    this.anchorDown = false;
-    this.anchorPos = new THREE.Vector3();
-    this.anchorChain = 0;       // length paid out (m)
-    this.anchorTarget = 0;
+    this.anchor = new Anchor();
 
     this.flood = 0;             // 0..1 progressive flooding
     this.list = 0;              // permanent list bias from flooding
@@ -77,6 +88,7 @@ export class ShipPhysics {
     this._f = new THREE.Vector3();
     this._t = new THREE.Vector3();
     this._n = new THREE.Vector3();
+    this._dragN = new THREE.Vector3();
     this._p = new THREE.Vector3();
     this._wp = new THREE.Vector3();
     this._sample = {};
@@ -87,10 +99,12 @@ export class ShipPhysics {
     this._tmpF = new THREE.Vector3();
     this._stbd = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
-    this._clr = new THREE.Vector3(-22, -7, 0);
-    this._screw = new THREE.Vector3(-150, -8, 0);
-    this._rudderPt = new THREE.Vector3(-158, -9, 0);
-    this._bow = new THREE.Vector3(HALF_L_FWD, -6, 0);
+    this._clr = new THREE.Vector3(...dynamics.clr);
+    const centre=items=>items.reduce((v,item)=>v.add(new THREE.Vector3(...item.position)),new THREE.Vector3()).multiplyScalar(1/items.length);
+    this._screw = spec.propulsion.thrustPoint?new THREE.Vector3(...spec.propulsion.thrustPoint):centre(spec.propulsion.shafts);
+    this._thrustAxes=new THREE.Vector3(...(spec.propulsion.thrustAxes??[1,1,1]));
+    this._rudderPt = centre(spec.propulsion.rudders);
+    this._bow = new THREE.Vector3(spec.length/2-4, -spec.draft*.5, 0);
     this._dir = new THREE.Vector3();
     this._side = new THREE.Vector3();
     this._vRel = new THREE.Vector3();
@@ -103,37 +117,35 @@ export class ShipPhysics {
     this._gyro = new THREE.Vector3();
     this._tau = new THREE.Vector3();
 
-    this.calibrate(patches);
   }
 
   /**
-   * Scale patch areas so that, floating at the design draft with the CG at the
-   * origin, total buoyancy exactly balances weight. Guarantees the ship floats
-   * where it is drawn.
+   * The full-load displacement calibrates the patch quadrature once. The
+   * operating mass is then the same hull's pressure integral at its operating
+   * draft, so drawing height, buoyancy and mass cannot diverge.
    */
-  calibrate(patches) {
-    let sum = 0;
-    for (const p of patches) {
-      const d = 0 - p.pos.y;              // depth below still water level
-      if (d > 0) sum += d * p.area * -p.nrm.y;
-    }
-    const need = this.mass * G;
-    this.areaScale = sum > 1e-6 ? need / (RHO * G * sum) : 1;
+  calibrate(patches, overrideMass) {
+    const reference = pressureIntegral(patches,0);
+    const operating = pressureIntegral(patches,operatingWaterlineY(this.vessel));
+    if (reference <= 0 || operating <= 0) throw new RangeError('A wet watertight hull is required for displacement calibration');
+    this.areaScale = this.vessel.designMass / (RHO * reference);
+    this.mass = overrideMass ?? this.vessel.designMass * operating / reference * this.buoyancyScale;
     for (const p of patches) p.area *= this.areaScale;
   }
 
   reset(x, z, heading) {
-    this.position.set(x, 0, z);
-    this.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading);
+    this.position.set(x, -operatingWaterlineY(this.vessel), z);
+    this.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -heading);
+    this.position.add(this._v.copy(this.cg).applyQuaternion(this.quaternion));
     this.velocity.set(0, 0, 0);
     this.omega.set(0, 0, 0);
     this.throttle = 0;
+    this.rudder = 0;
     this.rudderAngle = 0;
     this.flood = 0;
     this.list = 0;
-    this.anchorDown = false;
-    this.anchorChain = 0;
-    this.anchorTarget = 0;
+    this.slam = 0;
+    this.anchor.reset();
   }
 
   /* ---------------- helpers ---------------- */
@@ -170,6 +182,11 @@ export class ShipPhysics {
     this._cross.crossVectors(this._r, force);
     outTorque.add(this._cross);
   }
+  applyImpulseAtPoint(impulse,worldPoint){
+    this.velocity.addScaledVector(impulse,1/(this.mass*(1+this.addedMassLin)));
+    this._r.copy(worldPoint).sub(this.position);this._cross.crossVectors(this._r,impulse).applyMatrix3(this.updateWorldInertia());
+    this.omega.addScaledVector(this._cross,1/(1+this.addedMassAng));
+  }
 
   /* ---------------- main step ---------------- */
 
@@ -178,9 +195,32 @@ export class ShipPhysics {
    * @param {WaveField} field
    */
   step(dt, field) {
+    const dynamics=this.vessel.dynamics;
     const F = this._f.set(0, 0, 0);
     const T = this._t.set(0, 0, 0);
     const tmpF = this._tmpF;
+
+    const boost=this.vessel.waveBuoyancy;
+    const encounter=boost?field.encounterAt(this.position.x,this.position.z,boost.height):0;
+    const buoyancyScale=FLEET_BUOYANCY*(this.buoyancyScale+(boost?boost.scale-this.buoyancyScale:0)*encounter);
+
+    // Uniform pressure on a closed surface has zero resultant and moment.
+    // Subtract its common pressure gauge before the existing 38 m cap: a
+    // deeply immersed sealed body still displaces its fixed volume instead
+    // of losing all buoyancy when every face saturates to equal pressure.
+    // Open hull/deck quadratures retain their original pressure reference.
+    const samples=this._surfaceSamples,surface=this._sample;
+    let minSealedDepth=Infinity;
+    for(let i=0;i<this.patches.length;i++){
+      const patch=this.patches[i],wp=this.localToWorld(patch.pos,this._wp),k=i*10;
+      field.sampleWorld(wp.x,wp.z,surface);
+      const depth=surface.y-wp.y;
+      samples[k]=wp.x;samples[k+1]=wp.y;samples[k+2]=wp.z;samples[k+3]=depth;
+      samples[k+4]=surface.vx;samples[k+5]=surface.vy;samples[k+6]=surface.vz;
+      samples[k+7]=surface.nx;samples[k+8]=surface.ny;samples[k+9]=surface.nz;
+      if(patch.kind==='sealed')minSealedDepth=Math.min(minSealedDepth,depth);
+    }
+    const sealedGauge=Math.max(0,minSealedDepth);
 
     // flooding adds real weight; added mass only changes how fast the hull
     // responds to a force, it is not weight. The flood² term is what makes a
@@ -199,16 +239,15 @@ export class ShipPhysics {
     let submerged = 0;
     let slamAcc = 0;
     let dragAcc = 0;
+    let pressureDragPower = 0;
+    let heaveArea = 0;
     const sample = this._sample;
 
     for (let i = 0; i < this.patches.length; i++) {
       const patch = this.patches[i];
       // world position of the patch
-      const wp = this._wp.copy(patch.pos).sub(this.cg)
-        .applyQuaternion(this.quaternion).add(this.position);
-
-      field.sampleWorld(wp.x, wp.z, sample, 3);
-      const depth = sample.y - wp.y;
+      const k=i*10,wp=this._wp.set(samples[k],samples[k+1],samples[k+2]);
+      const depth=samples[k+3];
       if (depth <= 0) continue;
 
       submerged++;
@@ -234,7 +273,8 @@ export class ShipPhysics {
       // submerged hull displaces a FIXED volume, while linear-in-depth
       // would grow forever.
       if (patch.kind !== 'deck') {
-        const pb = RHO * G * Math.min(depth, 38) * area;
+        const head=depth-(patch.kind==='sealed'?sealedGauge:0);
+        const pb = RHO * G * Math.min(head, 38) * area * buoyancyScale;
         buoySum += pb * (-n.y);
         tmpF.set(0, -pb * n.y, 0);
         this.applyForceAtPoint(tmpF, wp, F, T);
@@ -251,27 +291,56 @@ export class ShipPhysics {
       // a real wall does. Buoyancy (position-based) is untouched, so she
       // still rides the crest face up. Cap removal condition: a proper
       // breaking-wave/body interaction model.
-      const rvx = pv.x - THREE.MathUtils.clamp(sample.vx, -12, 12);
-      const rvy = pv.y - THREE.MathUtils.clamp(sample.vy, -12, 12);
-      const rvz = pv.z - THREE.MathUtils.clamp(sample.vz, -12, 12);
-      const vn = rvx * n.x + rvy * n.y + rvz * n.z;
+      const rvx = pv.x - THREE.MathUtils.clamp(samples[k+4], -12, 12);
+      const rvy = pv.y - THREE.MathUtils.clamp(samples[k+5], -12, 12);
+      const rvz = pv.z - THREE.MathUtils.clamp(samples[k+6], -12, 12);
+      if (patch.kind !== 'deck') {
+        // Project the wetted hull onto the vertical response mode. The
+        // squared normal is a positive area measure at any hull attitude.
+        const weight = area * n.y * n.y;
+        heaveArea += weight;
+      }
       // Cd is deliberately low: a flat-plate Cd would double-count pressure
       // drag on the forebody without any pressure recovery aft, which made the
       // hull ~4x too "sticky". Surge resistance is handled by the skin-friction
       // term below instead.
       const cd = patch.kind === 'deck' ? 0.65 : 0.38;
-      const pd = 0.5 * RHO * cd * area * Math.abs(vn) * vn;
-      dragAcc += Math.abs(pd * n.x);
-      tmpF.set(n.x * -pd, n.y * -pd, n.z * -pd);
+      // Empirical fore/aft pressure recovery in the hull frame. With
+      // b = R diag(recovery,1,1) n, F=-C|v·b|(v·b)b and F·v=-C|v·b|³.
+      // The tensor therefore remains dissipative at every heading and sea
+      // incidence, while transverse/vertical pressure drag is unchanged.
+      const b = this._dragN.copy(patch.nrm);
+      b.x *= dynamics.surgeRecovery;
+      b.applyQuaternion(this.quaternion);
+      const dragVn = rvx*b.x + rvy*b.y + rvz*b.z;
+      const pd = 0.5 * RHO * cd * area * Math.abs(dragVn) * dragVn;
+      dragAcc += Math.abs(pd * b.x);
+      tmpF.copy(b).multiplyScalar(-pd);
+      pressureDragPower += tmpF.x*rvx + tmpF.y*rvy + tmpF.z*rvz;
       this.applyForceAtPoint(tmpF, wp, F, T);
 
-      // slamming: fast downward water entry, mostly on the forebody
-      if (vn < -5.0 && n.y < -0.35) {
-        slamAcc += (Math.abs(vn) - 5.0) * area * 0.00016;
+      // Entry flux through the free surface over this integration step.
+      // A submerged or emerging face is not a new impact. Positive entry
+      // speed points into water; n is the outward hull normal.
+      const entrySpeed = -(rvx*samples[k+7] + rvy*samples[k+8] + rvz*samples[k+9]);
+      const facing = -(n.x*samples[k+7] + n.y*samples[k+8] + n.z*samples[k+9]);
+      if (entrySpeed > 5 && facing > .35 && depth*samples[k+8] <= entrySpeed*dt) {
+        slamAcc += (entrySpeed - 5) * area * facing * 0.00016;
       }
     }
 
     this.emerged = 1 - submerged / this.patches.length;
+
+    // Reduced heave radiation model: K = rho*g*A, C = 2*zeta*sqrt(M*K).
+    // Radiation is generated by body motion in the mean-sea frame; incident
+    // wave velocity already drives the relative-water patch drag above.
+    // Its power is -C*vY^2, so it only removes heave energy.
+    // With no wetted hull there is no fluid radiation force.
+    const heaveForce = heaveArea > 0
+      ? -2 * this.heaveDampingRatio * Math.sqrt(massEff * RHO * G * heaveArea * buoyancyScale)
+        * this.velocity.y
+      : 0;
+    F.y += heaveForce;
 
     // ---- extra hull damping ---------------------------------------
     // Skin friction + wave-making on the wetted hull. This is what actually
@@ -280,8 +349,8 @@ export class ShipPhysics {
     //   0.5 * 1025 * 0.0053 * 18700 * 15.4^2 ~= 1.2e7 N  ->  ~30 kn at ~200 MW
     const speed = this.velocity.length();
     const subFrac = submerged / this.patches.length;
-    const wetted = 18700 * subFrac;
-    const Cf = 0.0053;
+    const wetted = dynamics.wettedArea * subFrac;
+    const Cf = dynamics.friction;
     const skinF = 0.5 * RHO * Cf * wetted * speed * speed;
     if (speed > 0.01) {
       tmpF.copy(this.velocity).multiplyScalar(-skinF / speed);
@@ -294,7 +363,7 @@ export class ShipPhysics {
     const stbd = this._stbd.set(0, 0, 1).applyQuaternion(this.quaternion);
     const sway = this.velocity.dot(stbd);
     if (Math.abs(sway) > 0.01) {
-      tmpF.copy(stbd).multiplyScalar(-0.5 * RHO * 0.9 * 4111 * sway * Math.abs(sway));
+      tmpF.copy(stbd).multiplyScalar(-0.5 * RHO * 0.9 * dynamics.swayArea * sway * Math.abs(sway));
       this.localToWorld(this._clr, this._p);
       this.applyForceAtPoint(tmpF, this._p, F, T);
     }
@@ -302,27 +371,26 @@ export class ShipPhysics {
     // roll damping from bilge keels + hull form.
     //   I_roll = 4.2e10, k = d*g*GM = 8.7e9  ->  zeta ~= 0.035, which is the
     //   right order for a big ship and leaves room for resonant rolling.
-    const rollRate = this.omega.x;
-    T.x -= 1.35e9 * rollRate + 1.2e9 * rollRate * Math.abs(rollRate);
-    // pitch damping -> zeta ~= 0.045
-    T.z -= 1.05e11 * this.omega.z;
-    // yaw damping (hull + skeg); time constant ~35 s, so she coasts in a turn
-    T.y -= 2.5e10 * this.omega.y;
+    // Hull damping is diagonal in the body frame. Transform the complete
+    // torque back to world space so turning does not swap roll and pitch.
+    const bodyOmega = this._wLoc.copy(this.omega).applyQuaternion(
+      this._qi.copy(this.quaternion).invert());
+    this._tau.set(
+      -dynamics.rollLinear * bodyOmega.x - dynamics.rollQuadratic * bodyOmega.x * Math.abs(bodyOmega.x),
+      -dynamics.yawDamping * bodyOmega.y,
+      -dynamics.pitchDamping * bodyOmega.z,
+    ).applyQuaternion(this.quaternion);
+    T.add(this._tau);
 
     // ---- propulsion ------------------------------------------------
     const fwd = this._fwd.set(1, 0, 0).applyQuaternion(this.quaternion);
+    // A vectoring jet has a gravity-referenced thrust plane and a balanced
+    // thrust line. Propeller shafts retain their body-fixed force direction.
+    const propulsionDirection=this._dir.copy(fwd).multiply(this._thrustAxes).normalize();
     const vAlong = this.velocity.dot(fwd);
-    const T_MAX = 3.2e7;            // N of bollard pull (4 shafts, ~200 MW)
-    const V_FREE = 24;              // m/s at which thrust vanishes
-    let thrust = 0;
-    if (this.throttle > 0.001) {
-      const falloff = THREE.MathUtils.clamp(1 - Math.max(vAlong, 0) / V_FREE, 0, 1);
-      thrust = this.throttle * T_MAX * falloff;
-    } else if (this.throttle < -0.001) {
-      thrust = this.throttle * T_MAX * 0.42;
-    }
+    const thrust=propulsionForce(dynamics,this.throttle,vAlong,field.significantSeaHeight);
     if (thrust !== 0) {
-      tmpF.copy(fwd).multiplyScalar(thrust);
+      tmpF.copy(propulsionDirection).multiplyScalar(thrust);
       // applied at the screws, which also makes the bow lift under power
       this.localToWorld(this._screw, this._p);
       this.applyForceAtPoint(tmpF, this._p, F, T);
@@ -336,16 +404,16 @@ export class ShipPhysics {
 
     // rudder submergence (it lifts out when the stern pitches up)
     this.localToWorld(this._rudderPt, this._p);
-    field.sampleWorld(this._p.x, this._p.z, sample, 2);
+    field.sampleWorld(this._p.x, this._p.z, sample);
     const rudderDepth = sample.y - this._p.y;
-    const rudderSub = THREE.MathUtils.clamp(rudderDepth / 9, 0, 1);
+    const rudderSub = THREE.MathUtils.clamp(rudderDepth / dynamics.rudderDepth, 0, 1);
     // flow over the rudder: use the water-relative forward speed
     const flowX = sample.vx, flowZ = sample.vz;
     const vWaterRel = this._vRel.set(
       this.velocity.x - flowX, 0, this.velocity.z - flowZ).dot(fwd);
     const vR = Math.abs(vWaterRel);
     if (vR > 0.15 && rudderSub > 0.05) {
-      const A_R = 62;                                    // m^2 both rudders
+      const A_R = dynamics.rudderArea;                                    // m^2 both rudders
       const cl = 1.45 * Math.sin(this.rudderAngle) * Math.sign(vWaterRel);
       const side = this._side.set(0, 0, 1).applyQuaternion(this.quaternion);
       const fR = 0.5 * RHO * A_R * cl * vR * vR * rudderSub;
@@ -355,15 +423,14 @@ export class ShipPhysics {
 
     // ---- anchor chain ------------------------------------------------
     let chainF = 0;
-    if (this.anchorDown) {
-      this.anchorChain += THREE.MathUtils.clamp(
-        this.anchorTarget - this.anchorChain, -0.4 * dt * 60, 0.55 * dt * 60);
+    this.anchor.step(dt);
+    if (this.anchor.phase === 'set') {
       this.localToWorld(this._bow, this._p);
-      const dx = this.anchorPos.x - this._p.x;
-      const dz = this.anchorPos.z - this._p.z;
+      const dx = this.anchor.position.x - this._p.x;
+      const dz = this.anchor.position.z - this._p.z;
       const dh = Math.hypot(dx, dz);
-      const reach = Math.sqrt(Math.max(0, this.anchorChain ** 2 - DEPTH ** 2));
-      if (dh > reach * 0.995 && this.anchorChain > DEPTH) {
+      const reach = Math.sqrt(Math.max(0, this.anchor.chainLength ** 2 - DEPTH ** 2));
+      if (dh > reach * 0.995 && this.anchor.chainLength > DEPTH) {
         const stretch = dh - reach;
         const dirX = dx / dh, dirZ = dz / dh;
         // chain pulls the bow down toward the anchor
@@ -377,17 +444,25 @@ export class ShipPhysics {
 
     // ---- progressive flooding list ------------------------------------
     if (this.flood > 0.001) {
-      T.x -= this.mass * G * this.list * 0.9 * this.flood;
+      T.addScaledVector(fwd, -this.mass * G * this.list * 0.9 * this.flood);
     }
 
     this.lastForces.thrust = thrust;
+    this.lastForces.propulsionLimit=propulsionSpeedLimit(dynamics,field.significantSeaHeight);
     this.lastForces.buoy = buoySum;
+    this.lastForces.buoyancyScale=buoyancyScale;
     this.lastForces.chain = chainF;
     this.lastForces.drag = dragAcc;
+    this.lastForces.skinDrag = skinF;
+    this.lastForces.pressureDragPower = pressureDragPower;
+    this.lastForces.entryImpulse = slamAcc;
     this.lastForces.netX = F.x;
     this.lastForces.netY = F.y;
+    this.lastForces.heaveDamping = heaveForce;
     this.lastForces.submerged = submerged;
-    this.slam = Math.min(1, slamAcc);
+    // Resolve point-quadrature entry impulses into a short impact response;
+    // render/damage updates can then sample it without missing a substep.
+    this.slam = Math.min(1, this.slam*Math.exp(-dt/.18) + slamAcc);
 
     // ---- integrate ----------------------------------------------------
     // linear
@@ -400,7 +475,7 @@ export class ShipPhysics {
     // sit far above anything real seas produce (30 kn = 15 m/s; the wall
     // itself throws her ~30-40 m/s) so ordinary physics never touches them.
     {
-      const vMax = 60;
+      const vMax = dynamics.speedLimit??60;
       const v2 = this.velocity.lengthSq();
       if (v2 > vMax * vMax) this.velocity.multiplyScalar(vMax / Math.sqrt(v2));
       const wMax = 1.1;
@@ -453,13 +528,14 @@ export class ShipPhysics {
   get attitude() {
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.quaternion);
     const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(this.quaternion);
-    const roll = Math.atan2(up.z, up.y);
+    const side = new THREE.Vector3(0, 0, 1).applyQuaternion(this.quaternion);
+    const roll = Math.atan2(-side.y, up.y);
     const pitch = Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1));
     return { roll, pitch, up, fwd };
   }
 
   /** Speed over ground in knots. */
-  get speedKnots() { return this.velocity.length() * 1.94384; }
+  get speedKnots() { return Math.hypot(this.velocity.x,this.velocity.z) * 1.94384; }
 
   /** Capsize test: is the keel above the water (i.e. upside down)? */
   get capsized() {
@@ -468,6 +544,5 @@ export class ShipPhysics {
   }
 }
 
-const HALF_L_FWD = SHIP.length / 2 - 4;
 
 export { RHO, DEPTH };

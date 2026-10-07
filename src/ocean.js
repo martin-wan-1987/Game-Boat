@@ -1,7 +1,7 @@
 /**
  * ocean.js — the sea surface.
  *
- * A single, crack-free, graded grid centred on the camera: cells are ~1.8 m
+ * A single, crack-free, graded grid centred on the ship: cells are ~1.8 m
  * near the player and grow to ~50 m at the horizon, so we get detail where it
  * matters and a horizon that reaches 12 km without a million vertices.
  *
@@ -10,6 +10,10 @@
  */
 import * as THREE from 'three';
 import { glslWaves, applyWaveUniforms } from './waves.js';
+import { cloudGLSL } from './atmosphere.js';
+import {searchlightGLSL} from './searchlights.js';
+import {solidWaterGLSL} from './solid-water.js';
+import {islandGLSL} from './islands.js';
 
 /* ------------------------------------------------------------------ *
  * Procedural textures
@@ -36,10 +40,12 @@ function fbm(x, y, oct = 4) {
 export function makeRippleNormalTexture(size = 256) {
   const data = new Uint8Array(size * size * 4);
   const H = new Float32Array(size * size);
+  // Integer Fourier modes are exactly periodic across both tile boundaries.
+  const spectrum = [[3,2,.17],[2,-5,.12],[-6,1,.11],[7,9,.06],[-11,5,.05],[15,-7,.036],[21,17,.028],[-29,11,.022],[31,-23,.018],[-17,-37,.016]];
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const fx = x / size * 8, fy = y / size * 8;
-      H[y * size + x] = fbm(fx, fy, 4) * 0.6 + fbm(fx * 3.7, fy * 3.7, 3) * 0.4;
+      H[y * size + x] = spectrum.reduce((height,[kx,ky,amplitude],i) =>
+        height + Math.sin((kx*x+ky*y)/size*Math.PI*2+i*1.73)*amplitude,0);
     }
   }
   const at = (x, y) => H[((y + size) % size) * size + ((x + size) % size)];
@@ -132,7 +138,7 @@ export class Ocean {
    * @param {object} opts
    * @param {object} opts.waveUniforms shared wave uniform block
    */
-  constructor({ waveUniforms, extent = 12000, seg = 384, grade = 5.2, quality = 'high' }) {
+  constructor({ waveUniforms,searchlightUniforms,solidWater, extent = 12000, seg = 384, grade = 5.2, quality = 'high' }) {
     this.extent = extent;
     this.seg = seg;
     this.grade = grade;
@@ -143,14 +149,17 @@ export class Ocean {
     this.rippleTex = ripple;
     this.foamTex = foamTex;
 
-    this.uniforms = Object.assign({}, waveUniforms, {
+    this.uniforms = Object.assign({}, waveUniforms,searchlightUniforms,solidWater.uniforms, {
       uOffset:      { value: new THREE.Vector2() },
       uEnvMap:      { value: null },
+      uReflection:  { value: null },
+      uReflectionMatrix: { value: new THREE.Matrix4() },
       uSunDir:      { value: new THREE.Vector3(0, 1, 0) },
       uSunColor:    { value: new THREE.Color(1, 0.95, 0.85) },
-      uDeepColor:   { value: new THREE.Color(0x02141f) },
-      uShallowColor:{ value: new THREE.Color(0x083a4e) },
-      uSSSColor:    { value: new THREE.Color(0x0e7d8a) },
+      uSunStrength: { value: 2.9 },
+      uDeepColor:   { value: new THREE.Color(0x061a26) },
+      uShallowColor:{ value: new THREE.Color(0x1c3d49) },
+      uSSSColor:    { value: new THREE.Color(0x1b6066) },
       uFoamColor:   { value: new THREE.Color(0xe6f0f5) },
       uFogColor:    { value: new THREE.Color(0x9fb3c4) },
       uFogDensity:  { value: 0.000115 },
@@ -187,23 +196,21 @@ export class Ocean {
           vHeight = s.pos.y;
           vDist   = distance(worldPos, cameraPosition);
 
-          // Whitecaps. Two independent sources:
-          //  1. the Gerstner map folding in on itself (jac < 1) — the classic
-          //     crest instability, which is what breaks on any steep wave;
-          //  2. absolute crest height, which isolates the tsunami's leading
-          //     wall: ambient sea never gets near 2 m of positive elevation,
-          //     so this term stays silent until the big wave arrives and then
-          //     paints its whole face white.
+          // Whitecaps follow compression / breaking, not world elevation.
+          // A 30 m long swell can have a gentle face with no white water.
           float j = s.jac;
-          float fold = smoothstep(0.92, 0.28, j);
-          float crestFoam = smoothstep(2.2, 6.5, s.pos.y);
-          vFoam = clamp(fold + crestFoam * 0.9, 0.0, 1.0);
+          float fold = 1.0 - smoothstep(0.48, 0.76, j);
+          vFoam = max(fold, smoothstep(0.32, 0.66, length(s.nrm.xz)) * 0.34);
 
           gl_Position = projectionMatrix * viewMatrix * vec4(worldPos, 1.0);
         }
       `,
       fragmentShader: /* glsl */`
         precision highp float;
+        ${cloudGLSL()}
+        ${searchlightGLSL()}
+        ${solidWaterGLSL(solidWater.maxEdges)}
+        ${islandGLSL()}
 
         uniform vec3  uSunDir;
         uniform vec3  uSunColor;
@@ -217,6 +224,9 @@ export class Ocean {
         uniform float uRippleAmt;
         uniform float uTsunamiFoam;
         uniform float uExposure;
+        uniform float uSunStrength;
+        uniform mat4 uReflectionMatrix;
+        uniform sampler2D uReflection;
         uniform samplerCube uEnvMap;
         uniform sampler2D   uRippleNrm;
         uniform sampler2D   uFoamTex;
@@ -228,11 +238,12 @@ export class Ocean {
         varying float vDist;
 
         void main() {
+          if(solidWater(vWorld)||islandWater(vWorld.xz))discard;
           vec3 V = normalize(cameraPosition - vWorld);
           float dist = vDist;
 
           // ---- fine capillary ripples -----------------------------------
-          vec3 gN = vNrm;
+          vec3 gN = normalize(vNrm);
           vec3 T = normalize(cross(vec3(0.0, 0.0, 1.0), gN));
           vec3 B = cross(gN, T);
           float fade = 1.0 - smoothstep(260.0, 2600.0, dist);
@@ -251,14 +262,15 @@ export class Ocean {
               vWorld.xz * 0.37 + vec2(uTime * 0.031, -uTime * 0.024)).xyz * 2.0 - 1.0;
             // the second octave's footprint is rotated 45 deg so the two
             // tiles cannot line up into a visible repeat grid
-            vec2 rot2 = mat2(0.7071, -0.7071, 0.7071, 0.7071) * vec2(n2.x, n2.z);
-            vec3 rip = n1 + vec3(rot2.x, 0.0, rot2.y) * 0.6 + n3 * 0.35;
-            N = normalize(gN + (T * rip.x + B * rip.z) * 0.50 * uRippleAmt * fade);
+            vec2 rot2 = mat2(0.7071, -0.7071, 0.7071, 0.7071) * n2.xy;
+            vec2 rip = n1.xy + rot2 * 0.6 + n3.xy * 0.35;
+            N = normalize(gN + (T * rip.x + B * rip.y) * 0.65 * uRippleAmt * fade);
           }
 
           // ---- base water colour ---------------------------------------
           float hn = clamp(vHeight * 0.06 + 0.5, 0.0, 1.0);
           vec3 deep = mix(uDeepColor, uShallowColor, hn * 0.85);
+          deep*=1.0-uNight*.35;
           // A breath of the haze colour keeps the water body off the black
           // floor: in a storm the sky dimms, the reflections dim with it,
           // and a shadowed crest could otherwise sink under display black —
@@ -268,34 +280,41 @@ export class Ocean {
           // ---- sky reflection ------------------------------------------
           vec3 R = reflect(-V, N);
           R.y = abs(R.y) * 0.85 + 0.02;
-          vec3 sky = textureCube(uEnvMap, R).rgb;
+          vec3 sky = textureCube(uEnvMap, R).rgb*(1.0-uNight*.93);
+          vec4 reflected = uReflectionMatrix * vec4(vWorld.x, 0.0, vWorld.z, 1.0);
+          vec2 reflectionUV = reflected.xy / reflected.w;
+          reflectionUV += N.xz * 0.018 * fade;
+          float inside = step(0.0, reflectionUV.x) * step(reflectionUV.x, 1.0)
+            * step(0.0, reflectionUV.y) * step(reflectionUV.y, 1.0) * step(0.0, reflected.w);
+          vec3 sceneReflection = texture2D(uReflection, clamp(reflectionUV, 0.001, 0.999)).rgb;
+          sky = mix(sky, sceneReflection, inside * (0.97 - fade * 0.06));
 
           float fres = pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 5.0);
-          // capped at 0.78: the sea should read as a dark mirror that
-          // carries strong sky reflections — the "波光粼粼" look comes from
-          // the sharp glitter field on top of it, not from a white haze
-          fres = mix(0.028, 0.78, fres);
+          // Water-air dielectric Fresnel; grazing views reflect the sky.
+          fres = mix(0.0204, 1.0, fres);
 
-          vec3 col = mix(deep, sky * 0.88, fres);
+          vec3 col = mix(deep, sky * 1.08, fres);
 
-          // ---- sun glitter ---------------------------------------------
-          // Three octaves: a hard specular glint, the broader sparkle field,
-          // and a wide sheen. A single Blinn lobe looks like plastic; the
-          // layered version is what makes sunlit water read as water. The
-          // whole stack is damped with distance, where sub-pixel normals
-          // otherwise alias into shimmer.
+          // GGX microfacet sunlight. Texture slopes make many moving glints;
+          // increasing roughness at distance integrates subpixel highlights.
           vec3 H = normalize(uSunDir + V);
           float nh = max(dot(N, H), 0.0);
-          float specFade = 0.30 + 0.70 * fade;
-          float spec = (pow(nh, 900.0) * 24.0
-                     + pow(nh, 130.0) * 2.4
-                     + pow(nh, 26.0)  * 0.32) * specFade;
-          col += uSunColor * spec;
+          float nl = max(dot(N, uSunDir), 0.0), nv = max(dot(N, V), 0.001);
+          float roughness = mix(0.20, 0.10, fade);
+          float a2 = pow(roughness, 4.0);
+          float denominator = nh * nh * (a2 - 1.0) + 1.0;
+          float distribution = a2 / (3.14159265 * denominator * denominator);
+          float k = pow(roughness + 1.0, 2.0) / 8.0;
+          float visibility = nl / (nl * (1.0 - k) + k) * nv / (nv * (1.0 - k) + k);
+          float specFresnel = 0.0204 + 0.9796 * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+          float specular = distribution * visibility * specFresnel / (4.0 * nv);
+          col += uSunColor * uSunStrength * specular * cloudTransmission(vWorld,uSunDir);
+          col += searchSurface(vWorld,N,V);
 
           // ---- subsurface scattering through thin crests ----------------
           float back = pow(clamp(dot(V, -uSunDir), 0.0, 1.0), 3.0);
           float thin = smoothstep(0.05, 0.75, vHeight * 0.16 + 0.28);
-          col += uSSSColor * back * thin * 0.70;
+          col += uSSSColor * back * thin * 0.38*(1.0-uNight*.7);
 
           // ---- foam / whitecaps ----------------------------------------
           float foam = vFoam;
@@ -307,13 +326,14 @@ export class Ocean {
             float ftex3 = texture2D(uFoamTex, vWorld.xz * 0.21 + vec2(-uTime*0.02, uTime*0.017)).a;
             foam *= clamp(ftex * 0.6 + ftex2 * 0.62 + ftex3 * 0.30, 0.0, 1.5);
             foam = clamp(foam * 1.55, 0.0, 1.0);
-            foam = mix(foam, 1.0, uTsunamiFoam * smoothstep(0.1, 0.7, vFoam + 0.35));
+            // Retain translucent blue faces; foam collects on folding crests.
+            foam = clamp(foam * (1.0 + uTsunamiFoam * 0.18), 0.0, 1.0);
 
             // Volume: a foam crown lit from the sun side reads as a rounded
             // mass of water rather than a decal. Shading the foam by its own
             // normal (instead of a flat colour) is what sells it.
             float shade = dot(N, uSunDir);
-            vec3 fc = uFoamColor * (0.62 + 0.38 * smoothstep(-0.35, 0.85, shade));
+            vec3 fc = uFoamColor * (0.62 + 0.38 * smoothstep(-0.35, 0.85, shade))*(1.0-uNight*.72);
             // a touch of cool shadow in the troughs of the foam
             fc = mix(fc * vec3(0.72, 0.80, 0.88), fc, smoothstep(-0.1, 0.5, shade));
             col = mix(col, fc, foam * 0.94);
@@ -336,6 +356,11 @@ export class Ocean {
   }
 
   setEnvMap(tex) { this.uniforms.uEnvMap.value = tex; }
+  setClouds(clouds) { Object.assign(this.uniforms,clouds.uniforms); }
+  setReflection(texture, matrix) {
+    this.uniforms.uReflection.value = texture;
+    this.uniforms.uReflectionMatrix.value = matrix;
+  }
   setSun(dir, color) {
     this.uniforms.uSunDir.value.copy(dir);
     this.uniforms.uSunColor.value.copy(color);
@@ -361,7 +386,7 @@ export class Ocean {
       Math.round(shipPos.z / c) * c,
     );
     this.uniforms.uTsunamiFoam.value = THREE.MathUtils.clamp(
-      waveField.tsuActive ? 0.85 : 0.0, 0, 1);
+      Math.abs(waveField.eventHeightAt(shipPos.x, shipPos.z)) / 15, 0, 1);
   }
 
   /** Per-frame camera distance, used for the short-wave LOD fade. */

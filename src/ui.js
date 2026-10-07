@@ -1,21 +1,25 @@
 /**
  * ui.js — screen flow: loading → lobby → mode → game → result.
  */
+import { SHIP } from './carrier-layout.js';
+import {FLEET} from './fleet.js';
+import './viewport.js';
+
 const $ = (id) => document.getElementById(id);
 
 const LOAD_STEPS = [
   ['初始化渲染管线', '创建 WebGL 上下文与后处理链'],
-  ['生成海面波形场', '叠加 8 组 Gerstner 波 · 长周期涌浪模型'],
-  ['构建舰体结构', '337 m 舰体放样 · 飞行甲板 · 舰岛 · 舰载机'],
-  ['求解浮力模型', '约 800 个水动力面元 · 逐帧静水压力积分'],
+  ['生成海面波形场', '四向交叉涌浪 · 初始海况 5–6 米'],
+  ['构建舰体结构', `${FLEET.length} 种舰船 · ${FLEET.map(e=>e.spec.displayName).join(' / ')}`],
+  ['求解浮力模型', '共享水动力求解器 · 逐帧静水压力积分'],
   ['烘焙天空环境', '生成反射立方体贴图与光照探针'],
   ['装配海洋交互特效', '艏波 · 尾流 · 飞沫 · 破浪白沫'],
   ['就绪', '欢迎登舰'],
 ];
 
 const TIPS = [
-  '提示：横摇超过约 27° 时飞行甲板边缘入水，复原力矩会骤降。',
-  '提示：海啸从舰艏方向推来，保持航速才能保持舵效。',
+  '提示：大幅横摇会让甲板和开口入水，持续进水将损失储备浮力。',
+  '提示：前后左右都有浪，保持航速才能保持舵效。',
   '提示：失去航速后，涌浪会把你推成横向 —— 那才是最危险的姿态。',
   '提示：大型海啸不一定会翻船，海况本身带有随机性。',
   '提示：拖动右侧马力拉杆可以无级调节主机功率。',
@@ -25,16 +29,33 @@ const TIPS = [
 export class Screens {
   constructor(h) {
     this.h = h;
-    this.sel = 'carrier';
+    this.sel = SHIP.id;
     this.mode = 'free';
-
+    $('fleetSummary').textContent=`${FLEET.length} 艘舰船可用。选择下方船型，再选择航行模式。`;
+    $('shipCards').replaceChildren(...FLEET.map(({spec:S,icon,type,description,load})=>{
+      const card=document.createElement('div');card.className='card'+(S.id===this.sel?' sel':'');card.dataset.ship=S.id;
+      const tag=document.createElement('div');tag.className='tag';tag.textContent='可 用';
+      const ico=document.createElement('div');ico.className='ico';ico.textContent=icon;
+      const title=document.createElement('h3');title.textContent=`${S.displayName} · ${S.designation}`;
+      const body=document.createElement('p');body.textContent=description;
+      const stat=document.createElement('div');stat.className='stat';
+      stat.textContent=`船长 ${S.length} m · 船宽 ${(S.deckHalfWidth*2).toFixed(1)} m\n吃水 ${S.operatingDraft.toFixed(2)} m · ${type}\n${load}`;
+      card.append(tag,ico,title,body,stat);return card;
+    }));
+    document.querySelectorAll('.btn,.card:not(.locked)').forEach(el=>{
+      el.tabIndex=0;el.setAttribute('role','button');
+      el.addEventListener('keydown',event=>{
+        if(event.key==='Enter'||event.key===' '){event.preventDefault();el.click();}
+      });
+    });
+    this.setVessel(SHIP);
     // lobby
     document.querySelectorAll('#shipCards .card').forEach((c) => {
       c.addEventListener('click', () => {
         if (c.classList.contains('locked')) return;
         document.querySelectorAll('#shipCards .card').forEach((x) => x.classList.remove('sel'));
         c.classList.add('sel');
-        this.sel = c.dataset.ship;
+        this.sel = c.dataset.ship;this.h.onVessel?.(this.sel);
         $('selName').textContent = c.querySelector('h3').textContent;
       });
     });
@@ -44,16 +65,43 @@ export class Screens {
         document.querySelectorAll('#mode .card').forEach((x) => x.classList.remove('sel'));
         c.classList.add('sel');
         this.mode = c.dataset.mode;
+        this.setNight(this.h.getNight(),this.mode);
       });
     });
 
     $('toMode').addEventListener('click', () => this.show('mode'));
     $('backLobby').addEventListener('click', () => this.show('lobby'));
     $('startGame').addEventListener('click', () => this.h.onStart?.(this.mode));
+    $('nightOption').addEventListener('click',()=>this.h.onNight());
+    this.setNight(this.h.getNight(),this.mode);
     $('againBtn').addEventListener('click', () => this.h.onAgain?.());
     $('toLobbyBtn').addEventListener('click', () => { this.show('lobby'); this.h.onExit?.(); });
     $('btnResume').addEventListener('click', () => this.h.onResume?.());
     $('btnBackLobby').addEventListener('click', () => { this.show('lobby'); this.h.onExit?.(); });
+  }
+
+  setVessel(spec){
+    this.sel=spec.id;
+    $('shipStatusLabel').textContent=`${spec.name} · 舰况`;
+    $('selName').textContent=`${spec.displayName} · ${spec.designation}`;
+    for(const c of document.querySelectorAll('#shipCards .card'))c.classList.toggle('sel',c.dataset.ship===spec.id);
+    $('mainFireBtn').hidden=!spec.weapons.some(w=>w.type==='main');
+    $('ciwsFireBtn').hidden=!spec.weapons.some(w=>w.type==='ciws');
+    $('weaponPanelBtn').hidden=!spec.weapons.some(w=>w.type==='ciws'||w.type==='main'&&w.operable!==false);
+    $('broadsideControls').hidden=!spec.battery?.broadside;
+    $('submarineControls').hidden=!spec.submarine;
+    $('speedUnit').textContent=spec.speedUnit??'kn';
+    document.querySelector('[data-cam="bridge"]').textContent=spec.submarine?'舰岛 / 潜望镜':'舰桥';
+  }
+
+  setMode(mode){
+    this.mode=mode;
+    for(const c of document.querySelectorAll('#mode .card'))c.classList.toggle('sel',c.dataset.mode===mode);
+    this.setNight(this.h.getNight(),mode);
+  }
+  setNight(on,mode){
+    const button=$('nightOption');button.setAttribute('aria-pressed',String(on));button.disabled=mode==='random';
+    button.textContent=mode==='random'?'昼夜自动交替':on?'黑夜 · 已开启':'黑夜 · 关闭';
   }
 
   show(id) {
@@ -114,7 +162,7 @@ export class Screens {
     if (elapsed < MIN_MS) await sleep(MIN_MS - elapsed);
     this.setProgress(100, '就绪');
     this.setTip(TIPS[Math.floor(Math.random() * TIPS.length)]);
-    this.enableEnter(true);
+    // boot() enables entry only after compiling and warming the render path.
   }
 }
 
