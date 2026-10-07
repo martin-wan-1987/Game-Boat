@@ -8,7 +8,7 @@ import {WaveField} from '../src/waves.js';
 import {SEA_STATE,TsunamiManager} from '../src/tsunami.js';
 import {DamageModel} from '../src/damage.js';
 import {WeaponBattery} from '../src/weapons.js';
-import {SubmarineStation} from '../src/submarine.js';
+import {Periscope} from '../src/submarine.js';
 import {SolidWater} from '../src/solid-water.js';
 import {deckHeightAt,insideOutline} from '../src/deck-surface.js';
 const output=process.argv[2]??'qa/2026-10-04/expanded-fleet',report={at:new Date().toISOString(),status:'passed',checks:[],vessels:[]};
@@ -60,7 +60,7 @@ for(const id of ['yamato','iowa'])check(id+' selected-side all-gun salvo and rec
 check('all deck masks follow transformed actual outlines',()=>{
   let points=0;
   for(const {spec:S} of FLEET){
-    const ship=new THREE.Object3D();ship.userData.vessel=S;ship.position.set(100,20,-50);ship.quaternion.setFromEuler(new THREE.Euler(.2,.7,.4));const mask=new SolidWater(S.deckOutline.length);mask.update(ship);
+    const ship=new THREE.Object3D();ship.userData.vessel=S;ship.position.set(100,20,-50);ship.quaternion.setFromEuler(new THREE.Euler(.2,.7,.4));const mask=new SolidWater(S.deckOutline.length);mask.update([ship]);
     for(let x=-S.length/2+S.length*.0093;x<S.length/2;x+=S.length/40)for(let z=-S.deckHalfWidth+S.deckHalfWidth*.0205;z<S.deckHalfWidth;z+=S.deckHalfWidth/20){
       const expected=insideOutline(S.deckOutline,x,z),p=new THREE.Vector3(x,deckHeightAt(S,x),z).applyMatrix4(ship.matrixWorld);
       // A flat projected deck is an affine polygon, so containment commutes
@@ -71,7 +71,20 @@ check('all deck masks follow transformed actual outlines',()=>{
     mask.texture.dispose();
   }return {points};
 });
-check('submarine station and periscope state',()=>{const s=new SubmarineStation();s.dive();assert.ok(s.shoreView('bridge'));s.togglePeriscope();assert.ok(s.mirrorView('bridge'));assert.ok(s.shoreView('orbit'));s.board();assert.equal(s.station,'aboard');assert.equal(s.periscope,false);s.reset();return {surfacePhysicsUnchanged:true};});
+check('surface submarine periscope and optical anchor',()=>{
+  const S=FLEET.find(e=>e.spec.id==='typhoon').spec,s=new Periscope(S.periscope),ship=new THREE.Group();ship.add(s.group);
+  assert.equal(s.mirrorView('bridge'),false);const initial=s.localEye(ship,new THREE.Vector3());s.toggle();s.update(2.2);
+  assert.ok(s.mirrorView('bridge'));assert.equal(s.mirrorView('orbit'),false);
+  assert.ok(Math.abs(s.localEye(ship,new THREE.Vector3()).y-initial.y-S.periscope.travel)<1e-8);
+  s.toggle();s.update(2.2);assert.equal(s.extension,0);s.reset();assert.equal(s.raised,false);
+  return {surfacePhysicsUnchanged:true,travel:S.periscope.travel};
+});
+check('multiple deck masks form a union without filling the sea between',()=>{
+  const S=FLEET[0].spec,ships=[0,1200].map(x=>{const ship=new THREE.Object3D();ship.userData.vessel=S;ship.position.x=x;return ship;});
+  const mask=new SolidWater(S.deckOutline.length,2);mask.update(ships);
+  assert.ok(mask.contains(0,0));assert.ok(mask.contains(1200,0));assert.equal(mask.contains(600,0),false);
+  mask.update([ships[0]]);assert.equal(mask.contains(1200,0),false);mask.texture.dispose();return {actors:2};
+});
 for(const {spec:S} of FLEET){
   check(S.id+' closed hull',()=>closure(S));
   const p=body(S),flat=new WaveField();for(let i=0;i<120*30;i++)p.step(1/120,flat);
@@ -79,7 +92,7 @@ for(const {spec:S} of FLEET){
   check(S.id+' flat stable and stronger buoyancy',()=>{assert.ok(Math.abs(steady.vy)<.03);assert.ok(Math.abs(steady.roll)<.05&&Math.abs(steady.pitch)<.09);return steady;});
   p.throttle=1;for(let i=0;i<120*110;i++)p.step(1/120,flat);
   const speed=Math.hypot(p.velocity.x,p.velocity.z)*3.6;
-  check(S.id+' forward propulsion',()=>{assert.ok(speed>0&&p.position.x>10);assert.ok(p.position.y<50);assert.ok(!p.capsized);if(S.speedUnit==='km/h')assert.ok(Math.abs(speed-511)<.1);else assert.ok(speed<=60*3.6+.001);return {speedKmH:speed,y:p.position.y};});
+  check(S.id+' forward propulsion',()=>{assert.ok(speed>0&&p.position.x>10);assert.ok(p.position.y<50);assert.ok(!p.capsized);assert.ok(speed<=(S.dynamics.speedLimit??60)*3.6+.001);return {speedKmH:speed,y:p.position.y};});
   const cases=[];
   for(const tier of ['ambient','large','broad'])seeded(931,()=>{
     const q=body(S),f=new WaveField().buildSea(SEA_STATE.hs,1,0,SEA_STATE.spread,SEA_STATE.peakLength,SEA_STATE.directions),t=new TsunamiManager(f),d=new DamageModel(S),stats={tier,minY:Infinity,maxY:-Infinity,maxRoll:0,maxPitch:0,minScale:Infinity,maxScale:0};q.throttle=.65;

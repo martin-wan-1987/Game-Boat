@@ -68,7 +68,7 @@ export class VesselWaterFX {
       `,
       fragmentShader: /* glsl */`
         precision highp float;
-        ${solidWaterGLSL(solidWater.maxEdges)}
+        ${solidWaterGLSL(solidWater.maxEdges,solidWater.maxActors)}
         ${islandGLSL()}
         uniform sampler2D uFoamTex;
         uniform float uTime;

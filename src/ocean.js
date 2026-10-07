@@ -208,8 +208,8 @@ export class Ocean {
       fragmentShader: /* glsl */`
         precision highp float;
         ${cloudGLSL()}
-        ${searchlightGLSL()}
-        ${solidWaterGLSL(solidWater.maxEdges)}
+        ${searchlightGLSL(searchlightUniforms.uSearchPosition.value.length)}
+        ${solidWaterGLSL(solidWater.maxEdges,solidWater.maxActors)}
         ${islandGLSL()}
 
         uniform vec3  uSunDir;

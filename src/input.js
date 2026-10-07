@@ -1,6 +1,7 @@
 /** Keyboard and Pointer inputs share one press-source map and viewport boundary. */
 import { TSUNAMI_TIERS } from './tsunami.js';
 import { viewport } from './viewport.js';
+const smoothRudder=(value,want,dt)=>value+(want-value)*Math.min(1,dt*(want===0?2.6:3.4));
 
 export class Input {
   constructor(domElement, hooks = {}) {
@@ -64,6 +65,7 @@ export class Input {
       if(k===',')this.hooks.onGunSide?.(-1);
       if(k==='.')this.hooks.onGunSide?.(1);
       if(k==='t')this.hooks.onPeriscope?.();
+      if(k==='b')this.hooks.onMissile?.();
       if(['w','a','s','d'].includes(k))e.preventDefault();
     });
     this.listen(window,'keyup',e=>this.presses.delete(`key:${e.key.toLowerCase()}`));
@@ -107,22 +109,26 @@ export class Input {
       stop:()=>this.setThrottle(0),run:()=>this.hooks.onToggleRun?.(),reset:()=>this.hooks.onReset?.(),
       'main-fire':()=>this.hooks.onMainFire?.(),'salvo':()=>this.hooks.onSalvo?.(),
       'port-guns':()=>this.hooks.onGunSide?.(-1),'starboard-guns':()=>this.hooks.onGunSide?.(1),
-      periscope:()=>this.hooks.onPeriscope?.()};
+      periscope:()=>this.hooks.onPeriscope?.(),'aim-reset':()=>this.hooks.onAimReset?.()};
     for(const el of document.querySelectorAll('[data-input-action]'))this.listen(el,'click',()=>{
-      this.release();actions[el.dataset.inputAction]();
+      if(['pause','help','reset'].includes(el.dataset.inputAction))this.release();
+      actions[el.dataset.inputAction]();
     });
     for(const el of document.querySelectorAll('button[data-panel]'))this.listen(el,'click',()=>{
-      this.release();this.hud.dataset.panel=el.dataset.panel;
-      for(const b of document.querySelectorAll('button[data-panel]'))b.setAttribute('aria-pressed',String(b===el));
+      this.release();this.setPanel(el.dataset.panel);
     });
+  }
+  setPanel(panel){
+    this.hud.dataset.panel=panel;
+    for(const b of document.querySelectorAll('button[data-panel]'))b.setAttribute('aria-pressed',String(b.dataset.panel===panel));
   }
   nudgeThrottle(delta){this.setThrottle(this.throttle+delta);}
   setThrottle(value){this.throttle=Math.max(-.35,Math.min(1,value));this.hooks.onThrottle?.(this.throttle);}
-  update(dt){
+  update(dt,response){
     if(!this.interactive||this.walkMode){this.rudder=0;return;}
     const keys=this.keys,want=Number(keys.has('d'))-Number(keys.has('a'));
     this.rudderTarget=want;
-    this.rudder+=(want-this.rudder)*Math.min(1,dt*(want===0?2.6:3.4));
+    this.rudder=(response??smoothRudder)(this.rudder,want,dt);
   }
   dispose(){this.release();this._events.abort();}
 }

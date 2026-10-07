@@ -85,7 +85,6 @@ function yamatoDetails(g,M,S){
   return {spin};
 }
 function typhoonDetails(g,M,S){
-  M.hull.color.set(0x363d41);M.port.color.set(0x363d41);M.grey.color.set(0x323c42);M.deck.color.set(0x39454a);
   for(const side of [-1,1])for(let i=0;i<10;i++){
     const hatch=mesh(g,new THREE.CylinderGeometry(2.4,2.4,.09,20),M.dark,13+i*4.8,S.deckY+.07,side*4.5);
     box(g,M.steel,13+i*4.8,S.deckY+.13,side*4.5,.1,.04,4.2);

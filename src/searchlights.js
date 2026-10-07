@@ -1,19 +1,19 @@
 import * as THREE from 'three';
 
-const COUNT=2,POWER=300000,ANGLE=.16,COLOUR=new THREE.Color(0xcbe5ff);
+const SIDES=[-1,1],COUNT=SIDES.length,POWER=300000,ANGLE=.16,COLOUR=new THREE.Color(0xcbe5ff);
 const forward=new THREE.Vector3(),position=new THREE.Vector3();
-export function makeSearchlightUniforms(){
-  return {uSearchPosition:{value:Array.from({length:COUNT},()=>new THREE.Vector4())},
-    uSearchDirection:{value:Array.from({length:COUNT},()=>new THREE.Vector4(1,0,0,200))},
+export function makeSearchlightUniforms(maxActors=1){
+  return {uSearchPosition:{value:Array.from({length:COUNT*maxActors},()=>new THREE.Vector4())},
+    uSearchDirection:{value:Array.from({length:COUNT*maxActors},()=>new THREE.Vector4(1,0,0,200))},
     uSearchColour:{value:COLOUR},uSearchCone:{value:new THREE.Vector2(Math.cos(ANGLE),Math.cos(ANGLE*.55))}};
 }
 /** The same finite emitter illuminates PBR geometry, sea and scattering. */
-export function searchlightGLSL(){return /* glsl */`
-uniform vec4 uSearchPosition[${COUNT}],uSearchDirection[${COUNT}];
+export function searchlightGLSL(count=COUNT){return /* glsl */`
+uniform vec4 uSearchPosition[${count}],uSearchDirection[${count}];
 uniform vec3 uSearchColour;uniform vec2 uSearchCone;
 vec3 searchRadiance(vec3 p){
   vec3 result=vec3(0.0);
-  for(int i=0;i<${COUNT};i++){
+  for(int i=0;i<${count};i++){
     vec3 delta=p-uSearchPosition[i].xyz;float distance=length(delta);
     float cone=smoothstep(uSearchCone.x,uSearchCone.y,dot(delta/max(distance,.45),uSearchDirection[i].xyz));
     float range=pow(clamp(1.0-pow(distance/uSearchDirection[i].w,4.0),0.0,1.0),2.0);
@@ -23,7 +23,7 @@ vec3 searchRadiance(vec3 p){
 }
 vec3 searchSurface(vec3 p,vec3 n,vec3 view){
   vec3 result=vec3(0.0);
-  for(int i=0;i<${COUNT};i++){
+  for(int i=0;i<${count};i++){
     vec3 delta=uSearchPosition[i].xyz-p;float distance=length(delta);
     vec3 light=delta/max(distance,.45),halfway=normalize(light+view);
     float cone=smoothstep(uSearchCone.x,uSearchCone.y,dot(-light,uSearchDirection[i].xyz));
@@ -40,7 +40,7 @@ export class Searchlights {
     const roof=vessel.bridgeRoof,radius=Math.min(.7,roof.width*.065);
     const metal=new THREE.MeshStandardMaterial({color:0x7a8790,roughness:.4,metalness:.5});
     this.lensMaterial=new THREE.MeshBasicMaterial({color:COLOUR,transparent:true,opacity:0,toneMapped:false});
-    this.lamps=[-1,1].map(side=>{
+    this.lamps=SIDES.map(side=>{
       const mount=new THREE.Group();mount.position.set(roof.x+roof.length*.35,roof.y+radius*1.35,roof.z+side*roof.width*.31);
       const pedestal=new THREE.Mesh(new THREE.CylinderGeometry(radius*.35,radius*.45,radius*.85,12),metal);
       pedestal.position.y=-radius*.925;mount.add(pedestal);
@@ -56,14 +56,14 @@ export class Searchlights {
       light.castShadow=false;this.group.add(mount);return {mount,light,target};
     });
   }
-  update(night,uniforms){
+  update(night,uniforms,offset=0){
     this.lensMaterial.opacity=night;
     this.group.updateWorldMatrix(true,true);
     this.lamps.forEach(({mount,light,target},i)=>{
       light.intensity=POWER*night;
       light.getWorldPosition(position);target.getWorldPosition(forward);forward.sub(position).normalize();
-      uniforms.uSearchPosition.value[i].set(position.x,position.y,position.z,light.intensity);
-      uniforms.uSearchDirection.value[i].set(forward.x,forward.y,forward.z,light.distance);
+      uniforms.uSearchPosition.value[offset+i].set(position.x,position.y,position.z,light.intensity);
+      uniforms.uSearchDirection.value[offset+i].set(forward.x,forward.y,forward.z,light.distance);
     });
   }
 }

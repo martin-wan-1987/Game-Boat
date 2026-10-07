@@ -6,6 +6,7 @@
 
 - **11 艘舰船**：企业号 CVN-65、辽宁舰 CV-16、大和、衣阿华 BB-61、密苏里 BB-63、055 南昌舰、022 导弹快艇、Knock Nevis 超级油轮、Interceptor 48 领航艇、澳大利亚精神号竞速艇、941 台风级核潜艇
 - **海况**：Gerstner 波场（CPU 物理与 GPU 渲染同一份数学）、逐面元水动力、疯狗浪 / 大型海啸 / 30 米大浪三档浪群、随机海况模式
+- **人机对抗**：8 艘军舰与随机 AI 敌舰交战，快速转向、真实舰壳命中、血量与胜败结算；在线真人对战暂未开放
 - **生存判定**：横摇—纵摇—甲板入水—储备浮力损失—倾覆全链路
 - **武器**：主炮火光与后坐力、近防炮拦截陨石碎块、战列舰选舷全炮齐射、炮塔回旋、潜艇潜望镜
 - **六视角**：环绕 / 跟随 / 舰桥 / 甲板 / 海啸 / 甲板行走第一人称（WASD 行走、E 奔跑）
@@ -126,6 +127,32 @@ mkdir -p ~/.codex/skills && cp -R .codex/skills/mobile-game-ui-audit ~/.codex/sk
 
 > 浪群会从前后左右交汇而来。迎浪时主要考验纵摇与拍击；一旦失去航速、被涌浪推成横向，就会开始剧烈横摇，大幅横摇使甲板入水、储备浮力逐渐损失，可能导致倾覆。
 
+## 人机对抗
+
+机库 → 模式选择 → 对抗模式 → 人机对抗 → 选择军舰 → 开始对战。
+只有军舰参战；油轮、领航艇和竞速艇继续用于航行模式。敌舰随机选择，可以与玩家同型。
+双方使用同一套水动力、武器和舰壳命中算法。AI 会自主航行、保持交战距离、转向规避并使用武器。
+对战舵令立即响应，航向由共用物理解算器中的控制配置快速跟随；退出后恢复航行舵机。
+
+| 武器 | 对战规则 |
+|---|---|
+| 普通主炮 | 自动射击，每分钟 40 发（1.5 秒间隔），每发命中 500；F / 舰炮按钮切换开关 |
+| 战列舰全部主炮 | F / G / 齐射按钮请求，全主炮每 5 秒一轮；完整命中合计 2000，按炮管分配 |
+| 近防炮 | 按住 V / 近防炮按钮；全舰命中总伤害 200/秒，持续 10 秒共 2000；连续 10 秒过热，冷却 5 秒；无限弹药 |
+| 近防炮瞄准 | J / L 左右、I / K 上下微调；触控四向按钮与“瞄准归中”使用同一输入 |
+| 导弹 | 地图面板点敌舰锁定，再按 B / 发射按钮；055 驱逐舰 20 发，每发命中 1500；锁定、射程、装填、弹药共同约束发射 |
+
+衣阿华 BB-61、密苏里 BB-63 血量 12000，大和 13000，辽宁 14000。
+首版未指定舰型采用企业号 15000、055 9000、022 6000、941 台风级 10000；
+941 台风级复用 20 发导弹规则，近防炮冷却采用 5 秒。尼米兹级 15000、福特级
+17000 已在规则中定义，现有舰队尚无这两类模型。
+
+暂停和帮助冻结战斗；重置、再来一次和退出清除血量、热量、弹药、目标锁定与弹道。
+固定预览地址也支持 `?play=1&mode=combat&ship=destroyer`，直接进入驱逐舰人机对抗。
+
+规则单一来源：`src/combat-rules.js`；敌我共用算法：`src/combat.js`；
+战斗读数、地图与弹道渲染：`src/combat-view.js`。
+
 ## 目录结构
 
 ```
@@ -147,6 +174,8 @@ src/
   physics.js        逐面元水动力与六自由度解算
   damage.js         入水—浮力损失—倾覆判定；anchor.js 抛锚
   camera.js         六相机；deck-walk.js 甲板行走投影与空气墙
+  combat-rules.js / combat.js / combat-view.js
+                    对战规则、敌我共用武器与命中、AI、战术地图和弹道
   weapons.js / projectiles.js / muzzle-blast.js / meteors.js
                     武器、弹道、炮口焰、陨石雨
   aircraft.js       航母甲板战机；searchlights.js 探照灯
@@ -170,10 +199,11 @@ HANDOFF.md          开发交接文档：不变量、已知问题、调查结论
 ## 调试技巧
 
 - 页面控制台 `window.__game` 拿到游戏实例；`__game.advance(秒)` 快进模拟（验证海啸弧线神器）
-- 探针全部 `node tools/<名字>.mjs` 直跑（本机 Chrome 需已安装）
+- CPU 探针用 `node tools/<名字>.mjs` 运行；对战规则用 `node tools/combat-check.mjs`，舰队物理用 `node tools/expanded-fleet-check.mjs`。
+- `mobile-ui-audit.mjs`、`shader-warmup-probe.mjs` 和 `combat-browser-check.mjs` 是浏览器审计模块：在 Ego Node runtime 中导入，复用当前 TaskSpace，分别调用 `auditMobile(task, {output})`、`verifyShaders(task, {output})`、`verifyCombatBrowser(page, {output})`。手机截图必须实际目视检查后再调用 `finalizeMobileAudit(output, {reviewedShots, notes})`；仅运行模块文件不会产生完整审核。
 - headless Chrome 残留进程会抢 CPU 让一切超时：`pkill -f "Google Chrome.*headless"`（**绝不能** `pkill -f "Google Chrome"`，会杀掉正常浏览器）
 
 ## 已知问题
 
 - 大型海啸召唤瞬间偶发**整屏黑**（着色器同步编译卡顿）：调查结论与修复路径见 [HANDOFF.md](HANDOFF.md)，已交接后续开发
-- 手机端布局审计报告在本地 `qa/` 目录（不入库），复跑 `node tools/mobile-ui-audit.mjs` 生成
+- 手机端布局审计报告在本地 `qa/` 目录（不入库），运行方法见上方浏览器审计模块说明；真机 iOS/Android 安全区域读取仍需单独验证。

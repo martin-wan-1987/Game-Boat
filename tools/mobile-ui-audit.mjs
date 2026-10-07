@@ -5,7 +5,7 @@
 import { writeFile, readFile, mkdir, readdir, appendFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import {FLEET} from '../src/fleet.js';
+import {FLEET,COMBAT_FLEET} from '../src/fleet.js';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const sizes = [[320,568],[375,667],[414,736],[375,812],[414,896],[360,780],[390,844],[393,852],[430,932],[402,874],[440,956],[360,640],[360,800],[412,915],[344,882],[673,841]];
 const defaultOutput = root + 'qa/2026-10-02/realism/mobile/';
@@ -33,7 +33,7 @@ async function applySurface(page, variant) {
 /** Test every displayed control and every reachable scrolled control at its
  * actual browser coordinates. A scroll changes the tested view, not the bounds.
  */
-function measureCandidate() {
+export function measureCandidate() {
   const boundary=window.__viewport,S={...boundary.rect},surface=boundary.surface;
   const V={left:0,top:0,right:innerWidth,bottom:innerHeight};
   const outer={left:surface.left+surface.insets.left,top:surface.top+surface.insets.top,right:surface.left+surface.width-surface.insets.right,bottom:surface.top+surface.height-surface.insets.bottom};
@@ -99,7 +99,7 @@ function measureCandidate() {
   }
   // Real text line boxes, including dynamic labels, numbers and all existing
   // screen copy. Text in scrolling dialogs must be reachable as well.
-  const textSelector='#inst .row .k,#inst .row .v,#shipStatusLabel,#alert .a1,#alert .a2,#dmg .hlbl,#dmgState,#help .kk span,#help .note,#help h3,#anchorStatus,#thrPct,#thrOrder,.touch-note,.screen:not(.hidden) .title,.screen:not(.hidden) .sub,.screen:not(.hidden) h1,.screen:not(.hidden) h2,.screen:not(.hidden) h3,.screen:not(.hidden) p,.screen:not(.hidden) .stat,.screen:not(.hidden) .tag,.screen:not(.hidden) .tip,.screen:not(.hidden) .barmeta span,.screen:not(.hidden) .rgrid .k,.screen:not(.hidden) .rgrid .v,.screen:not(.hidden) .rbig,#pause.on h2,button,.btn';
+  const textSelector='#inst .row .k,#inst .row .v,#shipStatusLabel,#alert .a1,#alert .a2,#dmg .hlbl,#dmgState,#help .kk span,#help .note,#help h3,#anchorStatus,#thrPct,#thrOrder,.touch-note,.screen:not(.hidden) .title,.screen:not(.hidden) .sub,.screen:not(.hidden) h1,.screen:not(.hidden) h2,.screen:not(.hidden) h3,.screen:not(.hidden) p,.screen:not(.hidden) .stat,.screen:not(.hidden) .tag,.screen:not(.hidden) .tip,.screen:not(.hidden) .barmeta span,.screen:not(.hidden) .rgrid .k,.screen:not(.hidden) .rgrid .v,.screen:not(.hidden) .rbig,#pause.on h2,#combatStatus .hp-row,#combatMapPanel .combat-readout,#weaponsPanel .combat-readout,button,.btn';
   const initialText=[];
   for(const el of document.querySelectorAll(textSelector)){
     if(!visible(el)||!el.textContent.trim())continue;
@@ -124,33 +124,48 @@ function measureCandidate() {
   for(const p of forbiddenHits)if(p.hit)record('forbidden-area-hits-action',p);
   return {viewport:{width:innerWidth,height:innerHeight,visualScale:visualViewport?.scale},surface,safe:S,layoutBounds,controls,textBounds,gaps,forbiddenHits,testedViews,failures:[...new Map(failures.map(f=>[JSON.stringify(f),f])).values()]};
 }
-function setCandidateState({state,ship}){
-    const g=__game;g.running=false;g.paused=false;g.showHelp=false;
+export function setCandidateState({state,ship}){
+    const g=__game;g.running=false;g.paused=false;g.showHelp=false;g.endCombat();
     if(g.vessel.id!==ship)g.selectVessel(ship);
-    g.mode=state==='mode-random'||state.startsWith('random-')||state.startsWith('meteor-')?'random':'free';
+    g.mode=state.startsWith('combat-')||state==='mode-combat'?'combat':state==='mode-random'||state.startsWith('random-')||state.startsWith('meteor-')?'random':'free';
     g.manualNight=state.startsWith('night-');g.screens.setMode(g.mode);
     g.skySys.setStorm(.42,g.mode==='random'||g.manualNight?1:0);g.meteors.reset();
-    g.input.release();g.setCamera(state==='walk'?'walk':'orbit');g.input.walkMode=state==='walk';
-    g.screens.hideAll();g.hud.show(!['loading','loading-ready','lobby','mode','mode-random','result'].includes(state));g.cockpit.show(false);
-    g.phys.anchor.reset();g.tsunami.reset();g.damage.reset();g.activeVessel.station.reset();g.shipMesh.userData.weapons.reset();
+    g.input.release();g.setCamera(state==='walk'?'walk':'orbit');g.input.walkMode=g.rig.mode==='walk';
+    g.screens.hideAll();g.hud.show(!['loading','loading-ready','lobby','mode','mode-random','mode-combat','combat-method','combat-lobby','result'].includes(state));g.cockpit.show(false);
+    g.phys.anchor.reset();g.tsunami.reset();g.damage.reset();g.shipMesh.userData.periscope?.reset();g.shipMesh.userData.weapons.reset();
     const requestedPanel=state.split('-').at(-1);
-    const panel=['helm','weapons','waves','cameras','stats'].includes(requestedPanel)?requestedPanel:state.startsWith('wave:')?'waves':'helm';
+    const panel=['helm','weapons','map','waves','cameras','stats'].includes(requestedPanel)?requestedPanel:state.startsWith('wave:')?'waves':'helm';
     document.getElementById('hud').dataset.panel=panel;
     for(const b of document.querySelectorAll('button[data-panel]'))b.setAttribute('aria-pressed',String(b.dataset.panel===panel));
-    if(['loading','loading-ready','lobby','mode','mode-random'].includes(state)){
-      g.screens.show(state.startsWith('loading')?'loading':state.startsWith('mode')?'mode':state);
+    if(['loading','loading-ready','lobby','mode','mode-random','mode-combat','combat-method','combat-lobby'].includes(state)){
+      g.screens.show(state.startsWith('loading')?'loading':state.startsWith('mode')?'mode':state==='combat-method'?'combat':state==='combat-lobby'?'combatLobby':state);
       g.screens.enableEnter(state==='loading-ready');
       if(state==='loading')g.screens.setProgress(57,'装配海洋交互特效');
     } else if(state==='result')g.screens.showResult({title:'舰 体 倾 覆',sub:'大量进水导致储备浮力耗尽，舰体缓慢下沉。',roll:179.9,pitch:89.9,wave:100,time:9999});
     else {
+      if(state.startsWith('combat-')){
+        const random=Math.random;try{Math.random=()=>.99;g.resetScenario({battle:true});}finally{Math.random=random;}
+        g.input.setPanel(panel);
+        if(state==='combat-overheated-weapons')g.combat.player.thermal.step(10,true);
+        if(state==='combat-aim-weapons'){g.combat.player.aimYaw=-Math.PI;g.combat.player.aimPitch=.9;}
+        if(state==='combat-map')g.combat.lock(g.combat.player,g.combat.enemy);
+        if(state==='combat-ammo-map'){g.combat.player.missiles=0;g.combat.lock(g.combat.player,g.combat.enemy);}
+        if(state==='combat-damaged-helm'){g.combat.player.damage(g.combat.player.hp-1);g.combat.enemy.damage(g.combat.enemy.hp-1);}
+        if(['combat-victory','combat-defeat','combat-draw'].includes(state)){
+          if(state!=='combat-victory')g.combat.player.damage(g.combat.player.hp);
+          if(state!=='combat-defeat')g.combat.enemy.damage(g.combat.enemy.hp);
+          g.screens.showCombatResult({outcome:state.slice(7),...g.combat});g.hud.show(false);
+        }
+        g.combatHUD.update(g.combat);
+      }
       if(state==='restart'){g.startGame('free');g.running=false;}
       if(state.startsWith('wave:')){g.running=true;g.fireTsunami(state.slice(5));g.running=false;}
       if(state.startsWith('anchor-')){g.phys.anchor.drop(g.phys.position);g.phys.anchor.step(state==='anchor-set'?3:1.2);}
       if(state==='guns-port-weapons')g.shipMesh.userData.weapons.setSide(-1);
       if(state==='guns-salvo-weapons')g.shipMesh.userData.weapons.requestSalvo();
-      if(g.vessel.submarine&&(state==='submarine-shore-helm'||state==='submarine-scope-cameras')){g.activeVessel.station.dive();if(state==='submarine-scope-cameras'){g.activeVessel.station.togglePeriscope();g.setCamera('bridge');}}
+      if(g.vessel.submarine&&state==='submarine-scope-cameras'){const optic=g.shipMesh.userData.periscope;optic.toggle();optic.update(2.2);g.setCamera('bridge');}
       if(state.startsWith('meteor-'))g.meteors.launch(g.phys,100,g.time);
-      g.paused=state==='pause';g.showHelp=state==='help';
+      g.paused=state==='pause'||state==='combat-pause';g.showHelp=state==='help'||state==='combat-help';
       g.hud.update(.16,g.hudState());
       for(const [id,text] of [['iSpeed',g.vessel.speedUnit==='km/h'?'511.0':'99.9'],['iHdg','359'],['iRoll','179.9°'],['iPitch','89.9°'],['iWave','100.0'],['iRudder','35°']])document.getElementById(id).textContent=text;
       if(state==='stats')document.getElementById('dmgState').textContent='大量进水 · 弃船';
@@ -237,7 +252,7 @@ async function touchAudit(page,tiers,ships,output){
     }catch(error){action.outcome='error';action.error=String(error);throw error;}
     finally{await appendFile(output+'mobile-touch-actions.jsonl',JSON.stringify(action)+'\n');}
   };
-  const flush=()=>page.evaluate(()=>{const g=__game;g.input.walkMode=g.rig.mode==='walk';g.hud.update(.16,g.hudState());});
+  const flush=()=>page.evaluate(()=>{const g=__game;g.input.walkMode=g.rig.mode==='walk';g.hud.update(.16,g.hudState());g.combatHUD.update(g.combat);});
   const point=selector=>page.evaluate(selector=>{
     const el=[...document.querySelectorAll(selector)].find(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden');if(!el)throw new Error('Missing current-candidate control: '+selector);
     el.scrollIntoView({block:'center',inline:'nearest'});const r=el.getBoundingClientRect();
@@ -293,7 +308,7 @@ async function touchAudit(page,tiers,ships,output){
     });
     await test(`${ship}-camera-buttons`,async()=>{
       await panel('cameras');
-      for(const mode of ['orbit','chase','bridge','deck','cinema','walk']){await tap(`[data-cam="${mode}"]`);const s=await sample();record(`${ship}-camera-${mode}`,s.mode===mode,s);}
+      for(const mode of await page.evaluate(()=>[...document.querySelectorAll('#cams [data-cam]')].filter(b=>!b.hidden).map(b=>b.dataset.cam))){await tap(`[data-cam="${mode}"]`);const s=await sample();record(`${ship}-camera-${mode}`,s.mode===mode,s);}
       await tap('[data-cam="orbit"]');const before=await sample();await tap('[data-input-action="zoom-in"]');const near=await sample();await tap('[data-input-action="zoom-out"]');const far=await sample();
       record(`${ship}-zoom-buttons`,near.radius<before.radius&&far.radius>near.radius,{before:before.radius,near:near.radius,far:far.radius});
     });
@@ -349,11 +364,11 @@ async function touchAudit(page,tiers,ships,output){
       await dispatch('touchCancel');record(`${ship}-turret-hold-release`,!(await sample()).keys.length);
       await panel('helm');
     });
-    if(ship==='typhoon')await test('typhoon-station-touch',async()=>{
-      await panel('helm');await tap('#diveBtn');record('typhoon-dive',await page.evaluate(()=>__game.activeVessel.station.station==='shore'));
+    if(ship==='typhoon')await test('typhoon-periscope-touch',async()=>{
+      await panel('helm');
       await tap('#periscopeBtn');await panel('cameras');await tap('[data-cam="bridge"]');
-      await page.waitForFunction(()=>!document.getElementById('periscopeView').hidden);record('typhoon-scope',await page.evaluate(()=>__game.activeVessel.station.mirrorView(__game.rig.mode)));
-      await panel('helm');await tap('#boardBtn');record('typhoon-board',await page.evaluate(()=>__game.activeVessel.station.station==='aboard'&&!__game.activeVessel.station.periscope));
+      await page.waitForFunction(()=>!document.getElementById('periscopeView').hidden);record('typhoon-scope',await page.evaluate(()=>__game.shipMesh.userData.periscope.mirrorView(__game.rig.mode)));
+      await panel('helm');await tap('#periscopeBtn');record('typhoon-scope-lowered',await page.evaluate(()=>!__game.shipMesh.userData.periscope.raised));
     });
     await test(`${ship}-pinch`,async()=>{
       // Radius zoom belongs to orbit/chase/cinema; the submarine station
@@ -383,7 +398,7 @@ async function touchAudit(page,tiers,ships,output){
       record(`${ship}-lever-release-${kind}`,Math.abs(after.throttle-before.throttle)<1e-9,{before,after,nativeContacts,moveSource});
       if(kind==='rotate')await applySurface(page,mobileVariants.find(v=>v.name==='synthetic-island-left'));
     });
-    await test(`${ship}-walk`,async()=>{
+    if(await page.evaluate(()=>!document.querySelector('[data-cam=walk]').hidden))await test(`${ship}-walk`,async()=>{
       await panel('cameras');await tap('[data-cam="walk"]');await panel('helm');
       const hold=await point('[data-hold-key="w"]'),[look]=await canvasPoints(),before=await sample();
       await dispatch('touchStart',[{x:hold.x,y:hold.y,id:1},{...look,id:2}]);await dispatch('touchMove',[{x:hold.x,y:hold.y,id:1},{x:look.x+20,y:look.y+8,id:2}]);
@@ -454,6 +469,70 @@ async function touchAudit(page,tiers,ships,output){
       await tap('#btnBackLobby');
     });
   }
+  // Combat uses real CDP touches. Stop wall time only in this deterministic
+  // input suite; advance() still executes the current game and fixed-step physics.
+  for(const ship of COMBAT_FLEET.map(e=>e.spec.id))await test(ship+'-combat-touch',async()=>{
+    await page.evaluate(()=>{const g=__game;g.exitToLobby();g.screens.show('lobby');g.clock.start();});
+    await tap('#toMode');await tap('[data-mode="combat"]');
+    record(ship+'-combat-menu',await page.evaluate(()=>__game.screens.current==='combat'&&document.getElementById('onlineCombat').disabled));
+    await tap('#chooseAI');
+    record(ship+'-combat-military-filter',await page.evaluate(()=>[...document.querySelectorAll('#combatShipCards [data-ship]')].length===8&&['tanker','pilot','spirit'].every(id=>!document.querySelector('#combatShipCards [data-ship="'+id+'"]'))));
+    await tap('#combatShipCards [data-ship="'+ship+'"]');await tap('#startCombat');
+    await page.evaluate(()=>{const g=__game;g.clock.stop();g._govDone=true;g.input.setPanel('helm');const s=g.combat;s.ai.nextDecision=Infinity;s.ai.command={throttle:.5,rudder:.2,main:false,ciws:false,missile:false};});
+    record(ship+'-combat-start',await page.evaluate(ship=>__game.mode==='combat'&&__game.combat.player.spec.id===ship&&__game.combat.player.hp===__game.combat.player.profile.health&&__game.combat.actors.every(a=>a.entry.mesh.visible),ship));
+    await panel('map');
+    const initial=await page.evaluate(()=>({ammo:__game.combat.player.missiles,disabled:document.getElementById('missileBtn').disabled,lock:!!__game.combat.player.lockedTarget}));
+    await tap('#mapEnemy');
+    record(ship+'-map-lock-touch',await page.evaluate(()=>__game.combat.player.lockedTarget===__game.combat.enemy&&document.getElementById('mapEnemy').getAttribute('aria-pressed')==='true'));
+    if(initial.ammo){
+      await tap('#missileBtn');
+      record(ship+'-missile-touch',initial.disabled&&!initial.lock&&await page.evaluate(ammo=>__game.combat.player.missiles===ammo-1&&__game.combat.player.shots.missile===1,initial.ammo));
+    }
+    if(await page.evaluate(()=>__game.combat.player.profile.mainBarrels||__game.combat.player.profile.ciwsMounts))await panel('weapons');
+    if(await page.evaluate(()=>__game.combat.player.profile.mainBarrels)){
+      const helm=await point('#weaponsPanel [data-hold-key="a"]');await dispatch('touchStart',[{x:helm.x,y:helm.y,id:1}]);
+      await page.click('#mainFireBtn');
+      record(ship+'-main-action-preserves-held-helm',await page.evaluate(()=>__game.input.keys.has('a')));
+      await dispatch('touchCancel');
+      await page.evaluate(()=>{const g=__game;if(!g.combat.player.profile.salvo)g.combat.player.mainAuto=true;else g.combat.player.salvoRequested=true;g.advance(3);});
+      record(ship+'-main-live-fire',await page.evaluate(()=>__game.combat.player.shots.shell>0));
+    }
+    if(await page.evaluate(()=>__game.combat.player.profile.ciwsMounts)){
+      const fire=await point('#ciwsFireBtn'),helm=await point('#weaponsPanel [data-hold-key="d"]');
+      await dispatch('touchStart',[{x:fire.x,y:fire.y,id:1},{x:helm.x,y:helm.y,id:2}]);
+      const before=await page.evaluate(()=>__game.phys.heading);
+      await page.evaluate(()=>__game.advance(.25));
+      const held=await page.evaluate(()=>({keys:[...__game.input.keys],rudder:__game.phys.rudderAngle,heading:__game.phys.heading,shots:__game.combat.player.shots.ciws}));
+      record(ship+'-combat-move-fire',held.keys.includes('v')&&held.keys.includes('d')&&held.rudder>.6&&held.heading>before&&held.shots>0,held);await dispatch('touchCancel');
+      for(const key of ['j','l','i','k']){
+        const p=await point('#ciwsAim [data-hold-key="'+key+'"]');await dispatch('touchStart',[{x:p.x,y:p.y,id:1}]);await page.evaluate(()=>__game.advance(.2));await dispatch('touchEnd');
+      }
+      const p=await point('#ciwsAim [data-hold-key="l"]');await dispatch('touchStart',[{x:p.x,y:p.y,id:1}]);await page.evaluate(()=>__game.advance(.2));await dispatch('touchCancel');
+      record(ship+'-aim-touch',await page.evaluate(()=>__game.combat.player.aimYaw>.1&&!__game.input.keys.size));await tap('[data-input-action="aim-reset"]');
+      record(ship+'-aim-reset-touch',await page.evaluate(()=>__game.combat.player.aimYaw===0&&__game.combat.player.aimPitch===0));
+      await page.evaluate(()=>{__game.combat.player.thermal.reset();__game.combat.player.mainAuto=false;});
+      const hot=await point('#ciwsFireBtn');await dispatch('touchStart',[{x:hot.x,y:hot.y,id:1}]);await page.evaluate(()=>__game.advance(10.02));
+      record(ship+'-overheat-touch',await page.evaluate(()=>__game.combat.player.thermal.locked&&document.getElementById('combatCIWSStatus').textContent.includes('过热')));await dispatch('touchCancel');
+      await page.evaluate(()=>__game.advance(5));record(ship+'-cooldown-recovery',await page.evaluate(()=>!__game.combat.player.thermal.locked));
+    }
+    for(const kind of ['cancel','leave','blur','rotate'])await exerciseRelease(kind,ship+'-combat');
+    await tap('#utility [data-input-action="help"]');
+    const frozen=await page.evaluate(()=>({time:__game.combat.time,ammo:__game.combat.player.missiles}));await page.evaluate(()=>__game.advance(1));
+    record(ship+'-combat-help-freeze',await page.evaluate(old=>__game.showHelp&&__game.combat.time===old.time&&__game.combat.player.missiles===old.ammo,frozen));await tap('#help [data-input-action="help"]');
+    await tap('#utility [data-input-action="pause"]');
+    const at=await page.evaluate(()=>__game.combat.time);await page.evaluate(()=>__game.advance(1));record(ship+'-combat-pause-freeze',await page.evaluate(at=>__game.paused&&__game.combat.time===at,at));
+    await tap('#pause [data-input-action="reset"]');
+    record(ship+'-combat-reset-all',await page.evaluate(()=>{const s=__game.combat;return __game.paused&&s.time===0&&s.player.hp===s.player.profile.health&&s.player.missiles===(s.player.profile.missiles??0)&&!s.player.thermal.locked&&s.player.thermal.heat===0&&!s.player.lockedTarget&&s.projectiles.length===0;}));
+    await tap('#btnResume');
+    for(const outcome of ['victory','defeat','draw']){
+      await page.evaluate(outcome=>{const g=__game;g.startGame('combat');if(outcome!=='victory')g.combat.player.damage(g.combat.player.hp);if(outcome!=='defeat')g.combat.enemy.damage(g.combat.enemy.hp);g.advance(1/60);},outcome);
+      record(ship+'-'+outcome+'-result',await page.evaluate(outcome=>__game.screens.current==='result'&&__game.combat.outcome===outcome&&!__game.running,outcome));
+      await tap('#againBtn');record(ship+'-'+outcome+'-restart',await page.evaluate(()=>__game.screens.current===null&&__game.combat.player.hp===__game.combat.player.profile.health&&__game.combat.time===0));
+    }
+    await tap('#utility [data-input-action="pause"]');await tap('#btnBackLobby');
+    record(ship+'-combat-return-clears',await page.evaluate(()=>!__game.combat&&!__game.battleEffects.group.visible&&Object.values(__game.rivals).every(e=>!e.mesh.visible)&&!__game.input.keys.size&&document.getElementById('combatStatus').hidden));
+    await page.evaluate(()=>__game.clock.start());
+  });
   await page.evaluate(()=>{__game.paused=true;__game.hud.update(.16,__game.hudState());});
   const browserEvents=await page.evaluate(()=>{__auditTouchController.abort();return __auditTouchEvents.events;});
   return {checks,taps,actions,browserEvents,passed:checks.every(c=>c.pass),limitations:['Blur is an explicitly dispatched browser event, not an observed mobile OS app-switch. Physical background/foreground lifecycle remains unverified.','If native rotation cancels the old touch sequence, lever ownership is additionally checked by an explicitly labelled stale PointerEvent replay.']};
@@ -474,30 +553,33 @@ export async function auditMobile(task,{pageLabel='p1',output=defaultOutput,vari
   const page=task.page(pageLabel),hashes=await sourceHashes(),provenance=await prepareCandidate(page);
   const {tiers,ships}=await page.evaluate(()=>({tiers:[...document.querySelectorAll('[data-tier]')].map(e=>e.dataset.tier),ships:[...document.querySelectorAll('#shipCards .card:not(.locked)')].map(e=>e.dataset.ship)}));
   const requiredCoverage={tiers:JSON.stringify([...tiers].sort())===JSON.stringify(['broad','large','rogue']),ships:JSON.stringify([...ships].sort())===JSON.stringify(FLEET.map(e=>e.spec.id).sort())};
-  const states=['loading','loading-ready','lobby','mode','mode-random','helm','weapons','waves','cameras','stats','walk',...tiers.map(t=>'wave:'+t),'anchor-lowering','anchor-set','help','pause','result','restart','night-helm','night-waves','random-helm','random-waves','meteor-helm','meteor-stats','guns-port-weapons','guns-salvo-weapons','submarine-shore-helm','submarine-scope-cameras'];
+  const states=['loading','loading-ready','lobby','mode','mode-random','helm','weapons','waves','cameras','stats','walk',...tiers.map(t=>'wave:'+t),'anchor-lowering','anchor-set','help','pause','result','restart','night-helm','night-waves','random-helm','random-waves','meteor-helm','meteor-stats','guns-port-weapons','guns-salvo-weapons','submarine-scope-cameras','mode-combat','combat-method','combat-lobby','combat-helm','combat-damaged-helm','combat-weapons','combat-aim-weapons','combat-overheated-weapons','combat-map','combat-ammo-map','combat-cameras','combat-stats','combat-pause','combat-help','combat-victory','combat-defeat','combat-draw'];
   const shotCases=new Set(['320x568-portrait:carrier:helm','320x568-portrait:tanker:lobby','320x568-portrait:carrier:result','375x812-portrait:carrier:helm','synthetic-island-left:carrier:helm','synthetic-island-right:tanker:wave:large','synthetic-android-hole:carrier:waves','673x841-portrait:tanker:help','568x320-landscape-left:carrier:pause','390x844-portrait:tanker:wave:broad','393x852-portrait:carrier:walk','320x568-portrait:carrier:cameras','320x568-portrait:tanker:stats']);
   for(const key of ['320x568-portrait:destroyer:helm','568x320-landscape-left:battleship:helm','393x852-portrait:pilot:helm','synthetic-android-hole:destroyer:lobby'])shotCases.add(key);
   for(const key of ['320x568-portrait:carrier:mode-random','320x568-portrait:pilot:night-waves','375x812-portrait:destroyer:night-helm','synthetic-island-left:carrier:meteor-helm','synthetic-island-right:battleship:night-helm','synthetic-android-hole:destroyer:meteor-stats','568x320-landscape-left:carrier:random-waves'])shotCases.add(key);
-  for(const key of ['320x568-portrait:yamato:guns-port-weapons','568x320-landscape-left:iowa:guns-salvo-weapons','375x812-portrait:typhoon:submarine-shore-helm','synthetic-island-right:typhoon:submarine-scope-cameras','synthetic-android-hole:spirit:helm'])shotCases.add(key);
+  for(const key of ['320x568-portrait:yamato:guns-port-weapons','568x320-landscape-left:iowa:guns-salvo-weapons','375x812-portrait:typhoon:helm','synthetic-island-right:typhoon:submarine-scope-cameras','synthetic-android-hole:spirit:helm'])shotCases.add(key);
+  for(const key of ['320x568-portrait:destroyer:combat-method','320x568-portrait:destroyer:combat-lobby','320x568-portrait:destroyer:combat-map','320x568-portrait:iowa:combat-weapons','375x812-portrait:carrier:combat-damaged-helm','synthetic-island-left:yamato:combat-overheated-weapons','synthetic-island-right:typhoon:combat-map','synthetic-android-hole:destroyer:combat-ammo-map','568x320-landscape-left:destroyer:combat-pause','673x841-portrait:liaoning:combat-help','393x852-portrait:iowa:combat-victory','402x874-portrait:yamato:combat-defeat'])shotCases.add(key);
+  const combatShips=COMBAT_FLEET.map(e=>e.spec.id);
+  requiredCoverage.combatShips=await page.evaluate(expected=>JSON.stringify([...document.querySelectorAll('#combatShipCards [data-ship]')].map(e=>e.dataset.ship).sort())===JSON.stringify(expected.sort()),combatShips);
   const cases=[],shots=[];await writeFile(output+'mobile-layout-cases.jsonl','');
   for(let i=0;i<variants.length;i++){
     const v=variants[i];await applySurface(page,v);
     const firstCase=cases.length;
-    const batch=await page.evaluate(({ships,states,setState,measure})=>{
+    const batch=await page.evaluate(({ships,combatShips,states,setState,measure})=>{
       const choose=(0,eval)('('+setState+')'),read=(0,eval)('('+measure+')'),cases=[];
-      for(const ship of ships)for(const state of states){choose({state,ship});cases.push({ship,state,...read()});}
+      for(const ship of ships)for(const state of states){if(state.startsWith('combat-')&&!combatShips.includes(ship))continue;choose({state,ship});cases.push({ship,state,...read()});}
       return cases;
-    },{ships,states,setState:setCandidateState.toString(),measure:measureCandidate.toString()});
+    },{ships,combatShips,states,setState:setCandidateState.toString(),measure:measureCandidate.toString()});
     for(const result of batch){
-      const {ship,state}=result;cases.push({name:v.name,source:v.source,...result});
+      const {ship,state}=result;cases.push({name:v.name,ship,state,failures:result.failures});
       if(capture&&shotCases.has(`${v.name}:${ship}:${state}`)){await chooseState(page,state,ship);await captureCase(page,output,`${v.name}-${ship}-${state.replace(':','-')}`,result,shots);}
     }
-    await appendFile(output+'mobile-layout-cases.jsonl',cases.slice(firstCase).map(c=>JSON.stringify(c)).join('\n')+'\n');
+    await appendFile(output+'mobile-layout-cases.jsonl',batch.map(c=>JSON.stringify({name:v.name,source:v.source,...c})).join('\n')+'\n');
     if((i+1)%4===0)console.log({mobileViewports:i+1,total:variants.length,cases:cases.length,failingCases:cases.filter(c=>c.failures.length).length});
     await writeFile(output+'mobile-ui-progress.json',JSON.stringify({viewports:i+1,total:variants.length,cases:cases.length,lastViewport:v.name}));
   }
   const counts={};for(const c of cases)for(const f of c.failures)counts[f.type]=(counts[f.type]||0)+1;
-  const layoutReport={status:'incomplete',phase:'layout-complete-touch-pending',generatedAt:new Date().toISOString(),hashes,provenance,coverage:{deviceGroups:16,viewportCases:variants.length,stateCases:cases.length,states,ships,tiers,requiredCoverage},shots,failures:counts,cases};
+  const layoutReport={status:'incomplete',phase:'layout-complete-touch-pending',generatedAt:new Date().toISOString(),hashes,provenance,coverage:{deviceGroups:16,viewportCases:variants.length,stateCases:cases.length,states,ships,tiers,requiredCoverage},geometryEvidence:'mobile-layout-cases.jsonl',shots,failures:counts,cases};
   await writeFile(output+'mobile-layout-audit.json',JSON.stringify(layoutReport,null,2));
   await writeFile(output+'mobile-ui-audit.json',JSON.stringify(layoutReport,null,2));
   console.log({mobilePhase:'layout-complete',cases:cases.length,failures:counts,saved:output+'mobile-layout-audit.json'});
@@ -514,7 +596,7 @@ export async function auditMobile(task,{pageLabel='p1',output=defaultOutput,vari
   await page.evaluate(()=>{document.getElementById('audit-timing').remove();__viewport.resetSource();});
   const finalHashes=await sourceHashes(),unchanged=sameHashes(hashes,finalHashes);
   const failed=cases.some(c=>c.failures.length)||!touch.passed||events.length>0||Object.values(requiredCoverage).some(v=>!v);
-  const report={status:failed?'failed':'incomplete',automatedStatus:failed?'failed':unchanged?'passed':'incomplete',platforms:{chromiumEmulation:'pending-visual-review',iOS:'unverified',android:'unverified'},generatedAt:new Date().toISOString(),hashes,finalHashes,sourceUnchanged:unchanged,provenance,coverage:{deviceGroups:16,viewportCases:variants.length,stateCases:cases.length,states,ships,tiers,requiredCoverage},shots,visualReview:null,failures:counts,cases,touch,events,limitations:['No physical iOS/Android device or official simulator is available; actual system safe-area and lifecycle behavior remain unverified.','Synthetic safe areas and occlusions are injected into the real runtime platform boundary; they are not device measurements.','Screenshot generation is not visual inspection. Overall emulation status remains incomplete until each representative screenshot is opened and reviewed.']};
+  const report={status:failed?'failed':'incomplete',automatedStatus:failed?'failed':unchanged?'passed':'incomplete',platforms:{chromiumEmulation:'pending-visual-review',iOS:'unverified',android:'unverified'},generatedAt:new Date().toISOString(),hashes,finalHashes,sourceUnchanged:unchanged,provenance,coverage:{deviceGroups:16,viewportCases:variants.length,stateCases:cases.length,states,ships,tiers,requiredCoverage},geometryEvidence:'mobile-layout-cases.jsonl',shots,visualReview:null,failures:counts,cases,touch,events,limitations:['No physical iOS/Android device or official simulator is available; actual system safe-area and lifecycle behavior remain unverified.','Synthetic safe areas and occlusions are injected into the real runtime platform boundary; they are not device measurements.','Screenshot generation is not visual inspection. Overall emulation status remains incomplete until each representative screenshot is opened and reviewed.']};
   await writeFile(output+'mobile-ui-audit.json',JSON.stringify(report,null,2));
   console.log({output,status:report.status,automatedStatus:report.automatedStatus,sourceUnchanged:unchanged,coverage:report.coverage,failures:counts,touchFailures:touch.checks.filter(c=>!c.pass),events,shots});
   return report;
@@ -563,6 +645,6 @@ export async function finalizeMobileAudit(output=defaultOutput,{reviewedShots,no
   report.status=failed?'failed':complete?'passed':'incomplete';
   report.platforms.chromiumEmulation=report.status;
   await writeFile(output+'mobile-ui-audit.json',JSON.stringify(report,null,2));
-  await writeFile(output+'README.md',`# Current-candidate mobile audit\n\nChromium emulation: **${report.status}**. iOS / Android runtime system boundaries: **unverified**.\n\n${report.coverage.viewportCases} viewport cases × ${report.coverage.ships.length} vessels × ${report.coverage.states.length} UI states = ${report.coverage.stateCases} layout cases. ${report.touch.checks.length} actual-input checks.\n\n48 CSS px controls; 8 px action gaps; live text line bounds; unique center/edge hit tests; runtime safe-area injection; CDP multi-touch, throttle, steering, orbit, pinch, deck walking, cancellation, blur-event, viewport rotation, pause/help/reset, and 3-second anchor.\n\nVisual review: ${notes}\n\n${report.limitations.join('\n\n')}\n\nCandidate source unchanged: ${report.sourceUnchanged}. See mobile-ui-audit.json for source hashes, source measurements, failures and per-action evidence.\n`);
+  await writeFile(output+'README.md',`# Current-candidate mobile audit\n\nChromium emulation: **${report.status}**. iOS / Android runtime system boundaries: **unverified**.\n\n${report.coverage.viewportCases} viewport variants; ${report.coverage.ships.length} fleet entries; ${report.coverage.states.length} states = ${report.coverage.stateCases} applicable layout cases (combat only military ships). ${report.touch.checks.length} actual-input checks.\n\n48 CSS px controls; 8 px action gaps; live text line bounds; unique center/edge hit tests; runtime safe-area injection; CDP multi-touch, throttle, steering, orbit, pinch, deck walking, cancellation, blur-event, viewport rotation, pause/help/reset, and 3-second anchor.\n\nVisual review: ${notes}\n\n${report.limitations.join('\n\n')}\n\nCandidate source unchanged: ${report.sourceUnchanged}. See mobile-ui-audit.json for source hashes, source measurements, failures and per-action evidence.\n`);
   console.log({status:report.status,platforms:report.platforms,sourceUnchanged:report.sourceUnchanged,missing});return report.status;
 }

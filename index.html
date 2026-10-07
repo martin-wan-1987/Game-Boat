@@ -329,6 +329,29 @@
   .compact-ui .rgrid{margin:16px 0;grid-template-columns:repeat(2,minmax(0,1fr))}
   .compact-ui .rgrid div{padding:12px 8px}
 
+
+  #combat,#combatLobby{background:#040b12}
+  .locked{opacity:.55;cursor:not-allowed}
+  #combatStatus{position:absolute;top:18px;left:282px;width:360px;padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .hp-row{display:flex;justify-content:space-between;gap:4px;font-size:13px;line-height:1.6}
+  #combatStatus progress{display:block;width:100%;height:8px;margin-top:5px;accent-color:var(--cyan)}
+  #enemyHPBar{accent-color:var(--red)!important}
+  #combatMapPanel{position:absolute;right:20px;top:334px;bottom:22px;width:246px;padding:8px;overflow:auto;display:none}
+  #hud[data-panel='map'] #combatMapPanel{display:block}
+  #hud[data-panel='map'] #helmPanel{display:none}
+  #hud[data-combat='true'] #controls,#hud[data-combat='true'] #broadsideControls,#hud[data-combat='true'] [data-panel='waves']{display:none!important}
+  .combat-readout{font-size:12px;line-height:1.6;overflow-wrap:anywhere;margin:8px 0}
+  #battleMapArea{position:relative;width:100%;height:156px;margin:8px 0;border:1px solid var(--line);overflow:hidden}
+  #battleMap{width:100%;height:100%}
+  #mapEnemy{position:absolute;width:48px;height:48px;padding:2px;font-size:12px;background:#4e2027;border-color:var(--red)}
+  #mapEnemy[aria-pressed='true']{background:#a83432;color:white}
+  #missileBtn{width:100%;font-size:12px}
+  .compact-ui #hud[data-combat='true'] #inst{display:none}
+  .compact-ui #combatStatus{position:static;order:0;flex:none;width:calc(100% - 112px);padding:6px 8px;gap:10px;min-height:56px}
+  .compact-ui #combatStatus .hp-row{font-size:12px}
+  .compact-ui #combatMapPanel{position:static;order:2;flex:0 1 auto;min-height:0;max-height:290px;width:100%;margin-top:auto;overflow:auto}
+  .compact-ui.wide-ui #combatMapPanel{width:min(100%,360px,max(280px,48%));align-self:flex-end}
+
   /* ---------------- cockpit glass (first person) ----------------
      Sits above the WebGL canvas but below the HUD. The canvas inside it is
      where the rain droplets and the wiper sweep are drawn; the frame/mullion
@@ -380,6 +403,11 @@
 
 <!-- ============ HUD ============ -->
 <div id="hud" data-panel="helm">
+  <div id='combatStatus' class='hpanel ui-block combat-only' hidden>
+    <div><div class='hp-row'><span>我舰</span><strong id='playerHP'>0</strong></div><progress id='playerHPBar' aria-label='我舰血量'></progress></div>
+    <div><div class='hp-row'><span>敌舰</span><strong id='enemyHP'>0</strong></div><progress id='enemyHPBar' aria-label='敌舰血量'></progress></div>
+  </div>
+
   <div id="port">
   <div id="inst" class="hpanel ui-block">
     <div class="hlbl" id="shipStatusLabel" style="margin-bottom:6px">舰况</div>
@@ -465,6 +493,20 @@
       <button type="button" data-hold-key="a">左舵</button>
       <button type="button" data-hold-key="d">右舵</button>
     </div>
+
+    <div class='combat-only' hidden>
+      <div id='ciwsAim' class='extra-controls'>
+        <div class='touch-directions'>
+          <button type='button' data-hold-key='j'>炮口左 J</button><button type='button' data-hold-key='l'>炮口右 L</button>
+          <button type='button' data-hold-key='i'>炮口上 I</button><button type='button' data-hold-key='k'>炮口下 K</button>
+          <button type='button' data-input-action='aim-reset'>瞄准归中</button>
+        </div>
+        <p id='combatAimStatus' class='combat-readout'></p>
+        <p id='combatCIWSHelp' class='combat-readout'></p>
+      </div>
+      <p id='combatGunStatus' class='combat-readout'></p>
+      <p id='combatCIWSStatus' class='combat-readout'></p>
+    </div>
     <div id="broadsideControls" class="extra-controls" hidden>
       <div class="touch-directions">
         <button id="portGunsBtn" type="button" data-input-action="port-guns" aria-pressed="false">左舷</button>
@@ -477,6 +519,13 @@
     </div>
   </div>
 
+
+  <div id='combatMapPanel' class='hpanel ui-block combat-only' hidden>
+    <div class='hlbl'>战术地图 · 点击敌舰锁定</div>
+    <p id='combatEnemyName' class='combat-readout'></p><p id='combatDistance' class='combat-readout'></p>
+    <div id='battleMapArea'><canvas id='battleMap'></canvas><button id='mapEnemy' type='button' aria-pressed='false'>敌舰</button></div>
+    <p id='missileStatus' class='combat-readout'></p><button id='missileBtn' type='button'>发射导弹</button>
+  </div>
   <div id="utility" class="ui-block">
     <button type="button" data-input-action="pause">暂停</button>
     <button type="button" data-input-action="help">帮助</button>
@@ -484,6 +533,7 @@
   <nav id="mobileTabs" class="ui-block" aria-label="操作面板">
     <button type="button" data-panel="helm" aria-pressed="true">操纵</button>
     <button id="weaponPanelBtn" type="button" data-panel="weapons" aria-pressed="false">武器</button>
+    <button id='mapPanelBtn' type='button' class='combat-only' data-panel='map' aria-pressed='false' hidden>地图</button>
     <button type="button" class="mobile-tab" data-panel="waves" aria-pressed="false">海浪</button>
     <button type="button" class="mobile-tab" data-panel="cameras" aria-pressed="false">视角</button>
     <button type="button" class="mobile-tab" data-panel="stats" aria-pressed="false">舰况</button>
@@ -518,10 +568,10 @@
         <div class="kk"><span>X</span><span>停车</span></div>
         <div class="kk"><span>抛锚按钮 / 空格</span><span>抛锚等待 3 秒 / 起锚</span></div>
         <div id="helpWaves" style="display:contents"></div>
-        <div class="kk"><span>F / 舰炮</span><span>主炮开火 · 火光、烟雾与后坐力</span></div>
-        <div class="kk"><span>V / 近防炮</span><span>长按射击 · 自动拦截陨石碎块</span></div>
-        <div class="kk"><span>G / 左舷 / 右舷</span><span>大和、衣阿华：选舷后全炮齐射</span></div>
-        <div class="kk"><span>J / L</span><span>长按旋转炮塔；逗号 / 句号选左 / 右舷</span></div>
+        <div class="kk"><span>F / 舰炮</span><span id="helpMain">主炮开火 · 火光、烟雾与后坐力</span></div>
+        <div class="kk"><span>V / 近防炮</span><span id="helpCIWS">长按射击 · 自动拦截陨石碎块</span></div>
+        <div class="kk"><span>G / 左舷 / 右舷</span><span id="helpSalvo">大和、衣阿华：选舷后全炮齐射</span></div>
+        <div class="kk"><span>J / L</span><span id="helpAim">长按旋转炮塔；逗号 / 句号选左 / 右舷</span></div>
         <div class="kk"><span>T</span><span>潜艇：升降潜望镜；升起后选择舰岛视角</span></div>
         <div class="kk"><span>鼠标拖动</span><span>360° 环绕观察</span></div>
         <div class="kk"><span>滚轮</span><span>拉近 / 拉远</span></div>
@@ -531,6 +581,7 @@
         <div class="kk"><span>H</span><span>本说明</span></div>
         <div class="kk"><span>P / Esc</span><span>暂停</span></div>
       </div>
+      <div id='combatHelp' class='combat-only note' hidden></div>
       <div class="note">
         浪群会从<b>前后左右</b>交汇而来，左右伴随浪较小。30 米大浪厚度为 210 米，前缘距舰艏约 100 米。<br>
         迎浪时主要考验纵摇与拍击；一旦失去航速、被涌浪推成横向，就会开始剧烈横摇，<br>
@@ -598,12 +649,40 @@
         <p>随机昼夜交替。白天通常出现随机海啸，黑夜常有陨石入海，军舰长按近防炮拦截碎石。</p>
         <div class="stat">普通海图 · 陨石海啸 <b>20–100 m</b></div>
       </div>
+
+      <div class='card' data-mode='combat'>
+        <div class='tag'>可 用</div><div class='ico'>⚔</div><h3>对抗模式</h3>
+        <p>选择军舰与随机敌舰交战。快速转向、舰炮、近防炮与地图锁定导弹。</p>
+        <div class='stat'>人机对抗已开放 · 在线真人对战暂未开放</div>
+      </div>
     </div>
     <div class="foot">
       <div class="btn ghost" id="backLobby">返回</div>
       <button class="btn ghost" id="nightOption" type="button" aria-pressed="false">黑夜 · 关闭</button>
       <div class="btn" id="startGame">启 航</div>
     </div>
+  </div>
+</div>
+
+
+<!-- ============ COMBAT ============ -->
+<div class='screen hidden' id='combat'>
+  <div class='wrap'>
+    <div class='eyebrow'>NAVAL COMBAT / 对抗模式</div><div class='title'>选择对抗方式</div>
+    <p class='sub'>首版与随机军舰进行人机交战，双方使用相同武器与血量规则。</p>
+    <div class='cards'>
+      <button class='card locked' id='onlineCombat' type='button' disabled aria-disabled='true'><h3>在线真人对战模式</h3><p>暂未开放</p></button>
+      <div class='card' id='chooseAI'><div class='tag'>可 用</div><h3>人机对抗模式</h3><p>敌舰会自主航行、开炮和规避来袭火力。</p></div>
+    </div>
+    <div class='foot'><button class='btn ghost' id='backModes' type='button'>返回模式选择</button></div>
+  </div>
+</div>
+<div class='screen hidden' id='combatLobby'>
+  <div class='wrap'>
+    <div class='eyebrow'>PVE / 人机对抗</div><div class='title'>选择参战军舰</div>
+    <p id='combatRulesSummary' class='sub'></p>
+    <div class='cards' id='combatShipCards'></div>
+    <div class='foot'><button class='btn ghost' id='backCombat' type='button'>返回</button><button class='btn' id='startCombat' type='button'>开始对战</button></div>
   </div>
 </div>
 

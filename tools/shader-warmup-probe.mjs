@@ -135,7 +135,7 @@ export async function verifyBlackHuntCase(page, { vessel, tier, height=60, night
     const { hullExtent } = await import('/src/tsunami.js');
     const THREE=await import('three'),{meteorWave}=await import('/src/meteors.js');
     const g = __game;
-    g._govDone = true; g.running = true; g.paused = true; g.showHelp = false;
+    g._govDone = true; g.running = true; g.paused = false; g.showHelp = false;g.clock.stop();g.clock.autoStart=false;
     g.mode='free';g.manualNight=night;g.selectVessel(vessel);g.skySys.setStorm(.42,Number(night));g.input.setThrottle(.75);
     if(tier==='meteor'){
       const wave=meteorWave(height),distance=wave.thickness*1.35+hullExtent(g.phys,1,0)+100;

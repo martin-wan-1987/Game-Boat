@@ -24,6 +24,10 @@ const G = 9.81;
 const DEPTH = 150;         // sea floor depth (m) — for anchoring
 export const FLEET_BUOYANCY=1.5;
 
+export const STANDARD_STEERING=Object.freeze({
+  rudderAt:(angle,target,dt)=>angle+THREE.MathUtils.clamp(target-angle,-THREE.MathUtils.degToRad(3.2)*dt,THREE.MathUtils.degToRad(3.2)*dt),
+  yawRate:0,yawResponse:0,
+});
 export class ShipPhysics {
   constructor(patches, opts = {}) {
     this.vessel = opts.vessel ?? SHIP;
@@ -70,6 +74,7 @@ export class ShipPhysics {
     this.throttle = 0;          // -0.35 .. 1
     this.rudder = 0;            // -1 .. 1 (command)
     this.rudderAngle = 0;       // actual, rate limited
+    this.steering = opts.steering ?? STANDARD_STEERING;
     this.anchor = new Anchor();
 
     this.flood = 0;             // 0..1 progressive flooding
@@ -399,8 +404,12 @@ export class ShipPhysics {
     // ---- rudder ------------------------------------------------------
     // rate-limited, and only works when water flows past it
     const target = this.rudder * THREE.MathUtils.degToRad(35);
-    const rate = THREE.MathUtils.degToRad(3.2) * dt;
-    this.rudderAngle += THREE.MathUtils.clamp(target - this.rudderAngle, -rate, rate);
+    this.rudderAngle = this.steering.rudderAt(this.rudderAngle,target,dt);
+
+    // Optional heading servo is a controller parameter, not a game-mode test.
+    // Gravity-referenced yaw keeps the hull's roll/heave solver independent.
+    T.y += this.inertia.y*(1+this.addedMassAng)*this.steering.yawResponse*
+      (-this.rudder*this.steering.yawRate-this.omega.y);
 
     // rudder submergence (it lifts out when the stern pitches up)
     this.localToWorld(this._rudderPt, this._p);

@@ -55,7 +55,7 @@ export class AtmospherePass extends Pass {
       uSunColour:{value:new THREE.Color(1,.89,.72)},uSunIntensity:{value:4.3}};
     this.volumeMaterial=new THREE.ShaderMaterial({name:'Cloud-shadowed air scattering',uniforms:this.uniforms,depthTest:false,depthWrite:false,
       vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0.0,1.0);}',
-      fragmentShader:`${cloudGLSL()}\n${searchlightGLSL()}
+      fragmentShader:`${cloudGLSL()}\n${searchlightGLSL(searchlightUniforms.uSearchPosition.value.length)}
         varying vec2 vUv;uniform sampler2D tDepth;
         uniform mat4 uInvProjection,uCameraMatrix;uniform vec3 uCameraPosition,uSunDir,uSunColour;uniform float uSunIntensity;
         void main(){

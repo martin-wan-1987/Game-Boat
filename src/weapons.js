@@ -41,13 +41,32 @@ export function buildTurret(S){
   bakeStatic(barrelRotor);bakeStatic(yaw);
   return {root,yaw,pitch,barrelRotor,muzzles,spec:S};
 }
+/** Joint-space aiming shared by meteor defence and ship combat. */
+export function aimTurret(m,point,dt,rate=4.5){
+  m.root.updateWorldMatrix(true,true);
+  m.localAim.copy(point);m.root.worldToLocal(m.localAim);
+  const yaw=-Math.atan2(m.localAim.z,m.localAim.x);
+  const pitch=Math.atan2(m.localAim.y-m.pitch.position.y,Math.hypot(m.localAim.x,m.localAim.z)-m.pitch.position.x);
+  const error=Math.atan2(Math.sin(yaw-m.yaw.rotation.y),Math.cos(yaw-m.yaw.rotation.y));
+  m.yaw.rotation.y+=THREE.MathUtils.clamp(error,-rate*dt,rate*dt);
+  m.pitch.rotation.z+=THREE.MathUtils.clamp(pitch-m.pitch.rotation.z,-rate*dt,rate*dt);
+  m.root.updateWorldMatrix(true,true);m.muzzles[0].getWorldPosition(m.origin);
+  m.pitch.getWorldQuaternion(m.rotation);m.direction.set(1,0,0).applyQuaternion(m.rotation);
+  return Math.abs(error)<.025&&Math.abs(pitch-m.pitch.rotation.z)<.025;
+}
+export function animateTurret(m,time,dt,firing){
+  const age=m.shots?time-m.lastShot:Infinity;
+  for(const flame of m.flames)flame.update(age);
+  if(m.spec.type!=='ciws')m.barrelRotor.position.x=-m.spec.radius*4*Math.exp(-Math.max(0,age)/.24);
+  if(m.spec.type==='ciws'&&firing)m.barrelRotor.rotation.x+=dt*55;
+}
 export class WeaponBattery {
   constructor(specs,options={}){
     this.options=options;this.selectedSide=1;this.aimOffset=0;this.salvoPending=false;this.mainPending=false;
     this.group=new THREE.Group();this.group.name='Main gun and CIWS battery';
     this.mounts=specs.map(S=>{
       const turret=buildTurret(S),flames=turret.muzzles.map(a=>muzzleBlast(a,S.radius*2));
-      this.group.add(turret.root);return {...turret,flames,lastShot:-Infinity,shotTime:-Infinity,shots:0,
+      this.group.add(turret.root);return {...turret,flames,lastShot:-Infinity,shots:0,
         cadence:1,nextCadence:0,aim:new THREE.Vector3(),localAim:new THREE.Vector3(),origin:new THREE.Vector3(),direction:new THREE.Vector3(),rotation:new THREE.Quaternion()};
     });
     this.group.userData.dynamic=true;this.elapsed=0;
@@ -59,11 +78,11 @@ export class WeaponBattery {
   setSide(side){this.selectedSide=side;this.aimOffset=0;this.salvoPending=false;}
   requestSalvo(){if(this.hasSalvo)this.salvoPending=true;}
   requestMain(){if(this.hasMain)this.mainPending=true;}
-  reset(){this.elapsed=0;this.tracers.reset();this.selectedSide=1;this.salvoPending=false;this.mainPending=false;this.aimOffset=0;for(const m of this.mounts){m.yaw.rotation.y=0;m.pitch.rotation.z=m.spec.type==='ciws'?.08:.055;m.barrelRotor.position.x=0;m.lastShot=m.shotTime=-Infinity;m.shots=0;m.cadence=1;m.nextCadence=0;for(const f of m.flames)f.update(100);}}
+  reset(){this.elapsed=0;this.tracers.reset();this.selectedSide=1;this.salvoPending=false;this.mainPending=false;this.aimOffset=0;for(const m of this.mounts){m.yaw.rotation.y=0;m.pitch.rotation.z=m.spec.type==='ciws'?.08:.055;m.barrelRotor.position.x=0;m.lastShot=-Infinity;m.shots=0;m.cadence=1;m.nextCadence=0;for(const f of m.flames)f.update(100);}}
   warmup(on){for(const m of this.mounts)for(const f of m.flames)f.warmup(on);this.tracers.warmup(on);}
   shoot(m,interval=m.spec.cooldown){
     if(this.elapsed-m.lastShot<interval)return false;
-    m.lastShot=m.shotTime=this.elapsed;m.shots++;return true;
+    m.lastShot=this.elapsed;m.shots++;return true;
   }
   update(dt,{main=false,ciws=false,rotate=0,night=0,targets=[],onIntercept=()=>{},onShot=()=>{},field=null}={}){
     this.elapsed+=dt;
@@ -91,21 +110,13 @@ export class WeaponBattery {
         m.root.updateWorldMatrix(true,true);m.muzzles[0].getWorldPosition(m.origin);
         let target=null,distance=1800**2;
         for(const candidate of targets){const d=m.origin.distanceToSquared(candidate.position);if(candidate.active&&d<distance){target=candidate;distance=d;}}
-        if(target){interceptPoint(m.origin,target,m.aim);m.localAim.copy(m.aim);m.root.worldToLocal(m.localAim);}
-        else m.localAim.set(1,1,0);
-        const yaw=-Math.atan2(m.localAim.z,m.localAim.x),pitch=Math.atan2(m.localAim.y,Math.hypot(m.localAim.x,m.localAim.z));
-        const turn=4.5*dt,angle=Math.atan2(Math.sin(yaw-m.yaw.rotation.y),Math.cos(yaw-m.yaw.rotation.y));
-        m.yaw.rotation.y+=THREE.MathUtils.clamp(angle,-turn,turn);m.pitch.rotation.z+=THREE.MathUtils.clamp(pitch-m.pitch.rotation.z,-turn,turn);
-        m.root.updateWorldMatrix(true,true);m.muzzles[0].getWorldPosition(m.origin);m.pitch.getWorldQuaternion(m.rotation);
-        m.direction.set(1,0,0).applyQuaternion(m.rotation);
+        if(target)interceptPoint(m.origin,target,m.aim);
+        else{m.aim.set(1000,1000,0);m.root.localToWorld(m.aim);}
+        const aligned=aimTurret(m,m.aim,dt);
         if(this.elapsed>=m.nextCadence){m.cadence=TRACER.minCadence+Math.random()*1.35;m.nextCadence=this.elapsed+.7+Math.random()*.7;}
-        const aligned=Math.abs(angle)<.035&&Math.abs(pitch-m.pitch.rotation.z)<.035;
         if(aligned&&this.shoot(m,m.spec.cooldown*m.cadence))this.tracers.spawn(m.origin,m.direction);
       }
-      const age=this.elapsed-m.shotTime;
-      for(const f of m.flames)f.update(age);
-      if(m.spec.type!=='ciws')m.barrelRotor.position.x=-m.spec.radius*4*Math.exp(-Math.max(0,age)/.24);
-      if(m.spec.type==='ciws'&&firing)m.barrelRotor.rotation.x+=dt*55;
+      animateTurret(m,this.elapsed,dt,firing);
     }
     if(mainFired)this.mainPending=false;
     this.tracers.sync();

@@ -11,7 +11,10 @@ import { WaveField, makeWaveUniforms, applyWaveUniforms } from './waves.js';
 import { Ocean } from './ocean.js';
 import { SkySystem } from './sky.js';
 import { SHIP } from './carrier-layout.js';
-import { FLEET, FLEET_BY_ID } from './fleet.js';
+import { FLEET, FLEET_BY_ID, COMBAT_FLEET } from './fleet.js';
+import {CombatSession} from './combat.js';
+import {COMBAT_RULES} from './combat-rules.js';
+import {CombatHUD,BattleEffects} from './combat-view.js';
 import { AtmospherePass } from './atmosphere.js';
 import { ShipPhysics } from './physics.js';
 import { CameraRig, HOME_ORBIT } from './camera.js';
@@ -147,14 +150,23 @@ class Game {
         this.meteors.warmup(true);this.skySys.setStorm(1,1);this.updateSearchlights();
         this.field.replacePackets([{x:4000,z:0,dirX:1,dirZ:0,height:30,thickness:210,lateralWidth:2200,speed:18}]);
         this.shipMesh.userData.weapons.warmup(true);
+        const rival=this.rivals[id];
+        this.battleEffects.warmup(true);
         this.skySys.setStorm(1);this.rain.mesh.visible=true;this.rain.mat.opacity=.4;
-        for(const castShadow of [shadow,false]){
-          this.skySys.sunLight.castShadow=castShadow;
-          this.renderer.setRenderTarget(this.composer.readBuffer);
-          await this.renderer.compileAsync(this.scene,this.camera);
-          this.renderer.setRenderTarget(target);this.render();
+        // Light cardinality is part of Three's shader key. Every military
+        // material must warm in both one-actor and two-actor scenes.
+        for(const partner of rival?[null,rival]:[null]){
+          if(partner){this.setActorVisible(partner,true);partner.mesh.userData.weapons.warmup(true);}
+          for(const castShadow of [shadow,false]){
+            this.skySys.sunLight.castShadow=castShadow;
+            this.renderer.setRenderTarget(this.composer.readBuffer);
+            await this.renderer.compileAsync(this.scene,this.camera);
+            this.renderer.setRenderTarget(target);this.render();
+          }
+          if(partner){partner.mesh.userData.weapons.warmup(false);this.setActorVisible(partner,false);}
         }
         this.shipMesh.userData.weapons.warmup(false);
+        this.battleEffects.warmup(false);
       }
     } finally {
       this.renderer.setRenderTarget(target);this.skySys.sunLight.castShadow=shadow;this.selectVessel(selected);
@@ -166,7 +178,10 @@ class Game {
     this.render();
     this.screens.setProgress(100, '就绪');
     this.screens.enableEnter(true);
-    if (new URLSearchParams(location.search).get('play') === '1') this.startGame(new URLSearchParams(location.search).get('mode')==='random'?'random':'free');
+    if (new URLSearchParams(location.search).get('play') === '1') {
+      const mode=new URLSearchParams(location.search).get('mode');
+      this.startGame(['random','combat'].includes(mode)?mode:'free');
+    }
 
     this.loop();
   }
@@ -195,13 +210,13 @@ class Game {
   }
 
   buildScene() {
-    this.searchlightUniforms=makeSearchlightUniforms();
+    this.searchlightUniforms=makeSearchlightUniforms(2);
     this.skySys = new SkySystem(this.renderer, this.scene, this.q.shadow);
     this.rig = new CameraRig(this.camera);
   }
 
   buildWaves() {
-    this.solidWater=new SolidWater(Math.max(...FLEET.map(({spec})=>spec.deckOutline.length)));
+    this.solidWater=new SolidWater(Math.max(...FLEET.map(({spec})=>spec.deckOutline.length)),2);
     this.waveUniforms = makeWaveUniforms(THREE);
     this.field = new WaveField();
     // Shared 5.6 m significant wave height and four-direction spectrum.
@@ -224,31 +239,38 @@ class Game {
   get waterFX(){return this.activeVessel.waterFX;}
   get damage(){return this.activeVessel.damage;}
   get vessel(){return this.shipMesh.userData.vessel;}
+  get vesselActors(){return [...Object.values(this.vessels),...Object.values(this.rivals)];}
+  get activeActors(){return this.combat?this.combat.actors.map(a=>a.entry):[this.activeVessel];}
 
   buildShip() {
-    this.vessels=Object.fromEntries(FLEET.map(({build})=>{
+    const makeActor=({build},visible)=>{
       const mesh=build({quality:this.q.shipDetail});
       mesh.userData.searchlights=new Searchlights(mesh.userData.vessel);mesh.add(mesh.userData.searchlights.group);
-      mesh.visible=mesh.userData.vessel.id===this.vesselId;this.scene.add(mesh);
+      mesh.visible=visible;this.scene.add(mesh);
       return [mesh.userData.vessel.id,{mesh,aircraft:new CarrierAircraft(mesh.userData.vessel)}];
-    }));
+    };
+    this.vessels=Object.fromEntries(FLEET.map(def=>makeActor(def,def.spec.id===this.vesselId)));
+    this.rivals=Object.fromEntries(COMBAT_FLEET.map(def=>makeActor(def,false)));
   }
   buildPhysics() {
-    for(const entry of Object.values(this.vessels)){
+    for(const entry of this.vesselActors){
       entry.physics=new ShipPhysics(entry.mesh.userData.patches,{vessel:entry.mesh.userData.vessel});
       entry.physics.reset(0,0,0);entry.physics.localToWorld(new THREE.Vector3(),entry.mesh.position);
     }
   }
   selectVessel(id) {
+    this.endCombat();
     this.vesselId=id;
     for(const [key,entry] of Object.entries(this.vessels)){
-      const visible=key===id;entry.mesh.visible=visible;entry.waterFX.foam.visible=visible;entry.waterFX.drops.visible=visible;
-      entry.aircraft.group.visible=visible;
-      entry.mesh.userData.weapons.tracers.mesh.visible=visible;
+      this.setActorVisible(entry,key===id);
     }
-    this.rig.setVessel(this.vessel);this.screens.setVessel(this.vessel);this.resetScenario();
+    this.rig.setVessel(this.vessel);this.screens.setVessel(this.vessel);this.resetScenario({battle:false});
     this.camera.near=Math.min(.9,this.vessel.length*.00263);this.camera.updateProjectionMatrix();
     this.skySys.sunLight.shadow.normalBias=Math.min(1.4,this.vessel.length*.00409);
+  }
+  setActorVisible(entry,visible){
+    entry.mesh.visible=visible;entry.waterFX.foam.visible=entry.waterFX.drops.visible=visible;
+    entry.aircraft.group.visible=visible;entry.mesh.userData.weapons.tracers.mesh.visible=visible;
   }
 
   buildEnv() {
@@ -264,19 +286,24 @@ class Game {
 
   buildFX() {
     this.particles = new Particles(this.q.particles);
-    for(const [id,entry] of Object.entries(this.vessels)) {
+    for(const entry of this.vesselActors) {
       const {vessel,loft}=entry.mesh.userData;
       entry.waterFX=new VesselWaterFX(this.waveUniforms,{vessel,loft,tex:this.ocean.foamTex,
         solidWater:this.solidWater,islands:this.islands,
         particles:this.q.particles*2,pixelRatio:this.renderer.getPixelRatio()});
-      entry.waterFX.foam.visible=entry.waterFX.drops.visible=id===this.vesselId;
+      entry.waterFX.foam.visible=entry.waterFX.drops.visible=entry.mesh.visible;
       this.scene.add(entry.waterFX.foam,entry.waterFX.drops);entry.damage=new DamageModel(vessel);
-      this.scene.add(entry.aircraft.group);entry.aircraft.group.visible=id===this.vesselId;
+      this.scene.add(entry.aircraft.group);entry.aircraft.group.visible=entry.mesh.visible;
     }
     this.scene.add(this.particles.points);this.particles.setPixelRatio(this.renderer.getPixelRatio());
     this.tsunami=new TsunamiManager(this.field);
     this.meteors=new Meteors();this.scene.add(this.meteors.group);this.randomSea=new RandomSea();
-    for(const entry of Object.values(this.vessels))this.scene.add(entry.mesh.userData.weapons.tracers.mesh);
+    for(const entry of this.vesselActors){
+      this.scene.add(entry.mesh.userData.weapons.tracers.mesh);
+      entry.mesh.userData.weapons.tracers.mesh.visible=entry.mesh.visible;
+    }
+    this.battleEffects=new BattleEffects();this.scene.add(this.battleEffects.group);
+    this.combatHUD=new CombatHUD(()=>this.combat,()=>this.fireMissile());
     this.audio = new Audio();
 
     // storm / weather
@@ -330,16 +357,18 @@ class Game {
       onMainFire: () => this.fireMainGun(),
       onSalvo:()=>this.requestSalvo(),onGunSide:side=>this.setGunSide(side),
       onPeriscope:()=>this.togglePeriscope(),
+      onAimReset:()=>this.resetAim(),onMissile:()=>this.fireMissile(),
     });
   }
 
   /* ---------------- flow ---------------- */
   startGame(mode) {
+    if(mode==='combat'&&!FLEET_BY_ID[this.vesselId].combat)this.selectVessel(COMBAT_FLEET[0].spec.id);
     this.mode = mode;
     this.screens.setMode(mode);
     this.screens.hideAll();
     this.hud.show(true);
-    this.resetScenario();
+    this.resetScenario({battle:mode==='combat'});
     this.running = true;
     this.paused = false;
     this.resultShown = false;
@@ -347,16 +376,45 @@ class Game {
     this.audio.init();
     this.audio.resume();
     this.screens.setNight(this.manualNight,mode);
-    this.hud.pushLog(mode==='random'?'启航 · 随机海况 · 昼夜自动交替':'启航 · 普通模式 · 自由航行', 0);
+    this.showHelp=false;
+    this.hud.update(.16,this.hudState());
+    this.hud.pushLog(mode==='combat'?`对战开始 · 随机敌舰 ${this.combat.enemy.spec.displayName}`:mode==='random'?'启航 · 随机海况 · 昼夜自动交替':'启航 · 普通模式 · 自由航行', 0);
     this.hud.pushLog('恶劣海况 · 四面交叉涌浪约 5–6 米', 0);
   }
 
   exitToLobby() {
     this.running = false;
+    this.paused=this.showHelp=false;this.input.release();this.endCombat();
+    this.hud.update(.16,this.hudState());
     this.hud.show(false);
   }
 
-  resetScenario() {
+  endCombat(){
+    this.combat?.dispose();this.combat=null;
+    for(const entry of Object.values(this.rivals))this.setActorVisible(entry,false);
+    this.battleEffects?.update(null);this.combatHUD?.update(null);
+    this.screens?.setVessel(this.vessel);
+    const panel=document.getElementById('hud');
+    if(panel.dataset.panel==='map')this.input.setPanel('helm');
+  }
+
+  beginCombat(){
+    const enemyDefinition=COMBAT_FLEET[Math.floor(Math.random()*COMBAT_FLEET.length)];
+    const enemy=this.rivals[enemyDefinition.spec.id];
+    enemy.physics.reset(1000,650,Math.PI);enemy.damage.reset();enemy.waterFX.reset();
+    enemy.physics.localToWorld(new THREE.Vector3(),enemy.mesh.position);
+    enemy.mesh.quaternion.copy(enemy.physics.quaternion);enemy.aircraft.reset(enemy.mesh,enemy.physics);
+    this.setActorVisible(enemy,true);
+    this.combat=new CombatSession(this.activeVessel,FLEET_BY_ID[this.vesselId],enemy,enemyDefinition,{
+      onPhysics:(actor,dt)=>this.islands.collide(actor.physics,dt),
+      onShot:shot=>{if(shot.kind==='shell')this.gunShot(shot,shot.actor.physics);},
+      onHit:hit=>this.combatHit(hit),
+    });
+    this.combatHUD.update(this.combat);this.battleEffects.update(this.combat);
+  }
+
+  resetScenario({battle=this.running&&this.mode==='combat'}={}) {
+    this.endCombat();this.resultShown=false;this.lostAt=null;
     this.phys.reset(0, 0, 0);
     this.phys.throttle = 0;
     this.phys.rudder = 0;
@@ -386,6 +444,7 @@ class Game {
     this.storm = .42;
     this.skySys?.setStorm(this.storm,this.mode==='random'?this.randomSea.nightTarget:Number(this.manualNight));
     this.cockpit?.show(false);
+    if(battle)this.beginCombat();
   }
 
   fireTsunami(tierId) {
@@ -421,32 +480,57 @@ class Game {
     this.screens.setNight(this.manualNight,this.screens.mode);
     if(!this.running)this.skySys.setStorm(this.storm,Number(this.manualNight));
   }
-  updateSearchlights(){this.shipMesh.userData.searchlights.update(this.skySys.night,this.searchlightUniforms);}
+  updateSearchlights(){
+    let offset=0;
+    for(const {mesh} of this.activeActors){
+      const lights=mesh.userData.searchlights;lights.update(this.skySys.night,this.searchlightUniforms,offset);offset+=lights.lamps.length;
+    }
+    for(let i=offset;i<this.searchlightUniforms.uSearchPosition.value.length;i++)this.searchlightUniforms.uSearchPosition.value[i].w=0;
+  }
 
   fireMainGun(){
     if(!this.running||this.paused||this.showHelp)return;
+    if(this.combat){
+      const player=this.combat.player;
+      if(player.profile.salvo)player.salvoRequested=true;
+      else player.mainAuto=!player.mainAuto;
+      this.combatHUD.update(this.combat);return;
+    }
     const weapons=this.shipMesh.userData.weapons;
     weapons.requestMain();
     weapons.update(0,{main:true,onShot:shot=>this.gunShot(shot)});
   }
   requestSalvo(){
     if(!this.running||this.paused||this.showHelp)return;
+    if(this.combat){if(this.combat.player.profile.salvo)this.combat.player.salvoRequested=true;return;}
     this.shipMesh.userData.weapons.requestSalvo();
   }
   setGunSide(side){
     if(!this.running||this.paused||this.showHelp)return;
+    if(this.combat)return;
     this.shipMesh.userData.weapons.setSide(side);
   }
-  gunShot({spec,origin,direction,recoilScale}){
+  gunShot({spec,origin,direction,recoilScale},physics=this.phys){
     const calibre=spec.radius*2,projectileMass=7800*Math.PI*(calibre/2)**2*calibre*5;
-    this.phys.applyImpulseAtPoint(direction.clone().multiplyScalar(-projectileMass*780*recoilScale),origin);
+    physics.applyImpulseAtPoint(direction.clone().multiplyScalar(-projectileMass*780*recoilScale),origin);
     const count=Math.ceil(12+calibre*80),spread=calibre*7;
     for(let i=0;i<count;i++){
       const velocity=direction.clone().multiplyScalar(6+Math.random()*15);
       velocity.x+=(Math.random()-.5)*spread;velocity.y+=(Math.random()-.5)*spread;velocity.z+=(Math.random()-.5)*spread;
       this.particles.spawn(origin.x,origin.y,origin.z,velocity.x,velocity.y,velocity.z,1.3+Math.random()*1.8,.8+calibre*6,3);
     }
-    this.rig.addShake(Math.min(.42,calibre*recoilScale*.18));this.audio.hit(Math.min(.6,calibre*1.1));
+    if(physics===this.phys){this.rig.addShake(Math.min(.42,calibre*recoilScale*.18));this.audio.hit(Math.min(.6,calibre*1.1));}
+  }
+  resetAim(){if(this.combat&&!this.paused&&!this.showHelp)this.combat.player.aimYaw=this.combat.player.aimPitch=0;}
+  fireMissile(){
+    if(!this.running||this.paused||this.showHelp||!this.combat)return;
+    this.combat.fireMissile(this.combat.player);this.combatHUD.update(this.combat);
+  }
+  combatHit({shot,point,amount,target}){
+    const count=shot.kind==='ciws'?2:shot.kind==='missile'?36:18;
+    for(let i=0;i<count;i++)this.particles.spawn(point.x,point.y,point.z,(Math.random()-.5)*16,4+Math.random()*14,(Math.random()-.5)*16,1.2,shot.kind==='missile'?8:3,3);
+    if(target===this.combat.player){this.rig.addShake(shot.kind==='ciws'?.015:.25);if(shot.kind!=='ciws')this.audio.hit(.5);}
+    if(shot.kind!=='ciws')this.hud.pushLog(`${target.side==='enemy'?'命中敌舰':'我舰中弹'} · ${Math.round(amount)} 伤害`,this.time);
   }
   togglePeriscope(){
     const optic=this.shipMesh.userData.periscope;
@@ -512,7 +596,7 @@ class Game {
     this.composer?.setSize(window.innerWidth, window.innerHeight);
     this.bloom?.setSize(window.innerWidth, window.innerHeight);
     this.particles.setPixelRatio(r);
-    for(const v of Object.values(this.vessels))v.waterFX.resize(innerHeight,r);
+    for(const v of this.vesselActors)v.waterFX.resize(innerHeight,r);
     return true;
   }
 
@@ -538,6 +622,8 @@ class Game {
   }
 
   step(dt) {
+    if(!this.running||this.paused||this.showHelp||this.resultShown)return;
+    this.input.update(dt,this.combat?COMBAT_RULES.steering.rudderAt:undefined);
     this.time += dt;
     this.field.update(dt);
 
@@ -550,9 +636,15 @@ class Game {
     this.phys.throttle = this.input.throttle;
     const anchorBefore = this.phys.anchor.phase;
     while (this.acc >= h && sub < 6) {
-      this.phys.rudder = this.input.rudder;
-      this.phys.step(h, this.field);
-      this.islands.collide(this.phys,h);
+      if(this.combat){
+        const keys=this.input.keys;
+        this.combat.step(h,{throttle:this.input.throttle,rudder:this.input.rudder,ciws:keys.has('v'),
+          yaw:Number(keys.has('l'))-Number(keys.has('j')),pitch:Number(keys.has('i'))-Number(keys.has('k'))},this.field);
+      }else{
+        this.phys.rudder = this.input.rudder;
+        this.phys.step(h, this.field);
+        this.islands.collide(this.phys,h);
+      }
       this.acc -= h;
       sub++;
     }
@@ -565,13 +657,8 @@ class Game {
     // not care about 100 ms of missed buoyancy.
     if (this.acc > 0.1) this.acc = 0;
 
-    this.phys.localToWorld(new THREE.Vector3(),this.shipMesh.position);
-    this.shipMesh.quaternion.copy(this.phys.quaternion);
+    for(const entry of this.activeActors)this.updateVessel(entry,dt);
     const parts=this.shipMesh.userData;
-    if(parts.spin)parts.spin.rotation.y+=dt*.6;
-    if(parts.searchRadar)parts.searchRadar.rotation.y+=dt*.9;
-    parts.flagAnimate?.(this.time);
-    parts.propulsion.update(dt,this.phys.throttle,this.phys.speedKnots,this.phys.rudderAngle);
     if(this.mode==='random'){
       const scheduled=this.randomSea.update(this.time,this.phys,this.tsunami,this.meteors);
       if(scheduled.phaseChanged)this.hud.pushLog(this.randomSea.nightTarget?'夜幕降临 · 留意陨石':'天亮 · 留意随机海啸',this.time);
@@ -580,6 +667,7 @@ class Game {
         this.audio.alarm(2);
       }
     }
+    if(!this.combat){
     this.meteors.prepare(dt,this.field,this.shipMesh);
     parts.weapons.update(dt,{main:this.input.keys.has('f'),ciws:this.input.keys.has('v'),rotate:Number(this.input.keys.has('l'))-Number(this.input.keys.has('j')),night:this.skySys.night,
       onShot:shot=>this.gunShot(shot),
@@ -594,6 +682,7 @@ class Game {
         this.damage.impact(.5*mass*relative.lengthSq(),this.shipMesh.worldToLocal(point.clone()),this.time,this.phys.mass);
         this.rig.addShake(.25);this.audio.hit(.5);
       }});
+    }
 
     // ---- tsunami + damage ----------------------------------------
     // bow punch first: how deep the forefoot is buried in the face of the
@@ -622,6 +711,11 @@ class Game {
     }
 
     this.damage.update(dt, this.phys, this.field, this.particles, this.time);
+    if(this.combat){
+      const enemy=this.combat.enemy;
+      enemy.entry.damage.update(dt,enemy.physics,this.field,this.particles,this.time);
+      for(const actor of this.combat.actors)if(actor.entry.damage.state==='lost')actor.damage(actor.hp);
+    }
     for (const e of this.damage.events) {
       if (!e._logged) { e._logged = true; this.hud.pushLog(e.msg, e.t); }
     }
@@ -662,8 +756,6 @@ class Game {
 
     // ---- fx -------------------------------------------------------
     const speed = Math.hypot(this.phys.velocity.x, this.phys.velocity.z);
-    this.waterFX.update(this.time, dt, this.field, this.shipMesh, this.phys);
-    this.activeVessel.aircraft.update(dt,this.shipMesh,this.phys,this.field,this.particles);
     this.islands.update(dt,this.field,this.shipMesh,this.particles,this.skySys.night);
     this.particles.update(dt, 0.6,this.field);
 
@@ -679,12 +771,12 @@ class Game {
     const walking = this.rig.mode === 'walk';
     if (walking) this.rig.walkStep(dt, this.input.keys, this.shipMesh, this.field);
     this.rig.update(dt, this.shipMesh, this.field, this.tsunami.dir, speed,cameraView);
-    this.input.update(dt);
     this.audio.update(dt, {
       speed, throttle: this.phys.throttle,
       seaState: this.tsunami.active ? this.tsunami.height : this.field.significantSeaHeight,
     });
     this.hud.update(dt, this.hudState());
+    this.combatHUD.update(this.combat);this.battleEffects.update(this.combat);
 
     // ---- underwater safety net --------------------------------------
     // Every rig clamps itself above the surface, but between frames (heavy
@@ -705,6 +797,14 @@ class Game {
     this.skySys.followTarget(this.phys.position);
 
     // ---- end condition --------------------------------------------
+    if(this.combat){
+      const outcome=this.combat.outcome;
+      if(outcome){
+        this.resultShown=true;this.running=false;this.input.release();
+        this.screens.showCombatResult({outcome,...this.combat});this.hud.show(false);
+      }
+      return;
+    }
     if (this.damage.state === 'lost' && this.lostAt === null) {
       this.lostAt = this.time;
       this.hud.pushLog('舰体沉没 · 记录已生成', this.time);
@@ -714,6 +814,16 @@ class Game {
       this.resultShown = true;
       this.showResult();
     }
+  }
+
+  updateVessel(entry,dt){
+    const {mesh,physics}=entry,parts=mesh.userData;
+    physics.localToWorld(new THREE.Vector3(),mesh.position);mesh.quaternion.copy(physics.quaternion);
+    if(parts.spin)parts.spin.rotation.y+=dt*.6;
+    if(parts.searchRadar)parts.searchRadar.rotation.y+=dt*.9;
+    parts.flagAnimate?.(this.time);parts.propulsion.update(dt,physics.throttle,physics.speedKnots,physics.rudderAngle);
+    entry.waterFX.update(this.time,dt,this.field,mesh,physics);
+    entry.aircraft.update(dt,mesh,physics,this.field,this.particles);
   }
 
   hudState() {
@@ -743,7 +853,7 @@ class Game {
   }
 
   render() {
-    this.solidWater.update(this.shipMesh);
+    this.solidWater.update(this.activeActors.map(a=>a.mesh));
     document.getElementById('periscopeView').hidden=!this.shipMesh.userData.periscope?.mirrorView(this.rig.mode)||this.paused||this.showHelp||!this.hud.el.hud.classList.contains('on');
     this.updateSearchlights();this.ocean.setSun(this.skySys.sunDir,this.skySys.sunLight.color);
     this.ocean.setCamDist(this.camera.position.distanceTo(this.phys.position));
@@ -751,7 +861,7 @@ class Game {
     this.ocean.update(this.time, this.phys.position, this.field);
     this.ocean.uniforms.uSunStrength.value = this.skySys.sunLight.intensity;
     this.waterReflection.update(this.renderer, this.scene, this.camera,
-      [this.ocean.mesh,...Object.values(this.vessels).flatMap(v=>[v.waterFX.foam,v.waterFX.drops]),this.particles.points,this.rain.mesh]);
+      [this.ocean.mesh,...this.vesselActors.flatMap(v=>[v.waterFX.foam,v.waterFX.drops]),this.particles.points,this.rain.mesh,this.battleEffects.group]);
     this.composer ? this.composer.render() : this.renderer.render(this.scene, this.camera);
   }
 
@@ -763,7 +873,7 @@ class Game {
     this.composer?.setSize(w, h);
     this.bloom?.setSize(w, h);
     this.waterReflection.resize(Math.ceil(w * 0.5), Math.ceil(h * 0.5));
-    for(const v of Object.values(this.vessels))v.waterFX.resize(h,this.renderer.getPixelRatio());
+    for(const v of this.vesselActors)v.waterFX.resize(h,this.renderer.getPixelRatio());
   }
 
   /**
