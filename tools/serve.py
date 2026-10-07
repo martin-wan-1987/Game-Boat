@@ -9,6 +9,9 @@ thread, and sends no-store headers so a refresh always gets the current build
 instead of a stale cached module.
 
 Usage:  python3 tools/serve.py [port]        (default port 8765)
+
+Binds 0.0.0.0 so the game is reachable from other machines on the LAN
+(development runs on a headless Mac mini; viewing happens from another device).
 """
 import functools
 import os
@@ -36,8 +39,9 @@ Handler.extensions_map['.mjs'] = 'text/javascript'
 Handler.extensions_map['.wasm'] = 'application/wasm'
 
 if __name__ == '__main__':
-    srv = ThreadingHTTPServer(('127.0.0.1', PORT),
+    srv = ThreadingHTTPServer(('0.0.0.0', PORT),
                               functools.partial(Handler, directory=ROOT))
     srv.daemon_threads = True
-    print(f'serving {ROOT} at http://127.0.0.1:{PORT}/index.html', flush=True)
+    print(f'serving {ROOT} at http://127.0.0.1:{PORT}/index.html '
+          f'(LAN: http://<本机IP>:{PORT}/)', flush=True)
     srv.serve_forever()
