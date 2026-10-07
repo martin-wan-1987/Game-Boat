@@ -2,3 +2,8 @@ node_modules/
 tools/shots/
 .DS_Store
 *.log
+
+# QA 审计产物（qa/<日期>/，动辄数百 MB，本地生成不入库）
+qa/
+# 本机 AI 助手内部状态
+.workbuddy-ai/
