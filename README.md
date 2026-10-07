@@ -67,6 +67,23 @@ ssh-keygen -t ed25519 -C "your@email.com"
 cat ~/.ssh/id_ed25519.pub   # 粘贴到 GitHub → Settings → SSH keys
 ```
 
+> 推送 `.github/workflows/` 下的文件需要 token 额外的 `workflow` 权限：
+> `gh auth refresh -h github.com -s workflow`（同样是浏览器设备码授权，一次性）。
+
+### 内网与外网预览
+
+| 场景 | 地址 | 说明 |
+|---|---|---|
+| 本机 | `http://127.0.0.1:8765` | 开发迭代，改完刷新即生效 |
+| 内网其他设备 | `http://<开发机IP>:8765` | serve.py 已绑定 0.0.0.0（开发机为无显示器 Mac mini） |
+| 外网（固定域名） | `https://martin-wan-1987.github.io/Game-Boat/` | GitHub Pages 自动部署，HTTPS |
+
+- 固定域名由 `.github/workflows/deploy.yml` 维护：push 到 main 后约 1 分钟自动
+  `npm install`（解决 three 在 .gitignore 里的问题）并部署。线上只反映 main 的
+  **已提交**状态，feature 分支合并回 main 后才会出现。
+- 快捷试玩入口 `?play=1`（预热后直接进普通模式）两种地址都可用。
+- 开发机 IP 是 DHCP 分配的，变了就用新 IP；临时 cloudflared 隧道地址不固定，仅作应急。
+
 ### 两台机器协作流程
 
 - **开工先同步**：`git pull --rebase origin main`
