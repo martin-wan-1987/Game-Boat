@@ -26,7 +26,7 @@ export const DESTROYER={
 export const BATTLESHIP={
   id:'battleship',name:'USS Missouri',displayName:'密苏里号战列舰',designation:'BB-63',number:'63',
   appearance:{hull:'#858e94',antifoul:'#753b32',deck:'#97846b',paint:0xb9bec0,rust:.16,planks:true},
-  length:270.43,beamWater:32.97,draft:10.7,operatingDraft:9.3,designMass:58000000,deckY:5.25,hullTopY:5.07,
+  length:270.43,beamWater:32.97,draft:10.7,operatingDraft:10.7,designMass:58000000,deckY:5.25,hullTopY:5.07,
   cg:[-1,-1.4,.04],gyradiusRoll:12.8,gyradiusPitch:75,gyradiusYaw:75,
   bridgeEye:[33.5,26.1,0],deckEye:[40,7,-10],walkStart:[103,-4],
   superstructure:{x:-3,z:0,length:103,width:25,centreY:20,topY:53},downflood:{height:13,halfBeam:13},lossPoint:[20,9,0],
@@ -41,8 +41,9 @@ export const BATTLESHIP={
     {x:24,z:0,y0:13.3,y1:18,l0:29,w0:18,l1:25,w1:15,corner:2.8},
     {x:24,z:0,y0:18,y1:23.8,l0:22,w0:14,l1:20,w1:12,corner:2.5},
     {x:24,z:0,y0:23.8,y1:27.5,l0:18,w0:14,l1:17,w1:13,corner:2}],
-  weapons:[...[{x:82,y:5.25,heading:0},{x:56,y:8.3,heading:0},{x:-83,y:5.25,heading:Math.PI}].map((t,i)=>({id:`main-${i}`,type:'main',style:'triple',position:[t.x,t.y,0],heading:t.heading,operable:i===0,barrels:3,length:16.2,radius:.203,width:10.4,height:3.4,bodyLength:11.4,cooldown:1.5})),
-    ...[-1,1].flatMap(side=>[30,4,-23].map((x,i)=>({id:`secondary-${side}-${i}`,type:'secondary',position:[x,9.2,side*11.5],heading:-side*Math.PI/2,operable:false,barrels:2,length:5.7,radius:.0635,width:4.3,height:2.8,bodyLength:4.5,cooldown:.65,side}))),
+  battery:{broadside:true,recoilScale:.42},
+  weapons:[...[{x:82,y:5.25,heading:0},{x:56,y:8.3,heading:0},{x:-83,y:5.25,heading:Math.PI}].map((t,i)=>({id:`main-${i}`,type:'main',style:'triple',position:[t.x,t.y,0],heading:t.heading,operable:true,barrels:3,length:16.2,radius:.203,width:10.4,height:3.4,bodyLength:11.4,cooldown:1.5})),
+    ...[-1,1].flatMap(side=>[30,4,-23].map((x,i)=>({id:`secondary-${side}-${i}`,type:'secondary',position:[x,9.2,side*11.5],heading:-side*Math.PI/2,operable:true,barrels:2,length:5.7,radius:.0635,width:4.3,height:2.8,bodyLength:4.5,cooldown:.65,side}))),
     ...[-1,1].flatMap(side=>[8,-41].map((x,i)=>({id:`ciws-${side}-${i}`,type:'ciws',style:'phalanx',position:[x,12.1,side*12],heading:-side*Math.PI/2,barrels:6,length:2.2,radius:.055,width:2.2,height:2.4,bodyLength:2.2,cooldown:.07})))],
 };
 export const PILOT={
@@ -67,8 +68,8 @@ export const PILOT={
   houses:[{x:-1,z:0,y0:1.32,y1:3.75,l0:6.3,w0:2.85,l1:5.2,w1:2.65,corner:.35,sealed:true}],
   weapons:[],
 };
-// The Missouri's user-requested higher freeboard raises the topside datum;
-// keel, shafts, design mass and operating load remain their original values.
+// The raised topside datum and deeper Iowa-class operating draft share one
+// waterline datum. Missouri retains her late-service weapons configuration.
 BATTLESHIP.deckLift=BATTLESHIP.deckY+BATTLESHIP.draft-BATTLESHIP.operatingDraft;
 for(const key of ['deckY','hullTopY'])BATTLESHIP[key]+=BATTLESHIP.deckLift;
 for(const key of ['bridgeEye','deckEye','lossPoint'])BATTLESHIP[key][1]+=BATTLESHIP.deckLift;

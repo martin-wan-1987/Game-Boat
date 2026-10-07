@@ -173,7 +173,10 @@ export class SkySystem {
     this.clouds.update(this.time ?? 0,k);
     this.sunLight.intensity = (4.3-k*2.0)*(1-night*.945);
     this.sunLight.color.set(0xffedd5).lerp(new THREE.Color(.48,.66,1),night);
-    this.hemi.intensity = (0.40+k*0.12)*(1-night*.72);
+    // Direct moonlight is weak, but diffuse sky/sea fill must still resolve
+    // dark paint outside the finite searchlight cones. Keep daylight exactly
+    // unchanged and share this response across every vessel and camera.
+    this.hemi.intensity = (0.40+k*0.12)*(1+night*2.6);
     // heavy, dark overcast
     this.sky.material.uniforms.turbidity.value = 6.5 + k * 9.5;
     this.sky.material.uniforms.rayleigh.value = 2.2 + k * 0.5;
@@ -189,7 +192,7 @@ export class SkySystem {
       this.scene.fog.color.lerp(new THREE.Color(.035,.055,.09),night);
     }
     if (this.scene.environmentIntensity !== undefined) {
-      this.scene.environmentIntensity = (0.64-k*.16)*(1-night*.92);
+      this.scene.environmentIntensity = (0.64-k*.16)*(1-night*.45);
     }
   }
 

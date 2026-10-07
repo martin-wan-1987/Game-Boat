@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import {bakeStatic} from './mesh-bake.js';
 import {ringSolid} from './solid.js';
-import {deckHeightAt,deckSlopeAt,insideOutline} from './deck-surface.js';
+import {deckHeightAt,insideOutline} from './deck-surface.js';
+import {stepDeckPayload,placeDeckPayload,releaseDeckPayload,stepAirPayload} from './deck-payload.js';
 const AIRFRAMES={f18:{length:18.3,span:12.3,body:1.4},j15:{length:21.9,span:14.7,body:1.7}};
 function fighter(kind){
   const S=AIRFRAMES[kind],g=new THREE.Group(),grey=new THREE.MeshStandardMaterial({color:0x8b969c,roughness:.66,metalness:.18}),dark=new THREE.MeshStandardMaterial({color:0x29363d,roughness:.38,metalness:.45});
@@ -30,56 +31,41 @@ function fighter(kind){
 export class CarrierAircraft {
   constructor(spec){
     this.spec=spec;this.group=new THREE.Group();this.group.name='Movable carrier aircraft';
-    this.planes=Array.from({length:spec.aircraft?.countMax??0},()=>{
-      const mesh=fighter(spec.aircraft.kind);this.group.add(mesh);
-      return {mesh,local:new THREE.Vector3(),relativeVelocity:new THREE.Vector3(),velocity:new THREE.Vector3(),spin:new THREE.Vector3(),state:'inactive'};
+    this.planes=Array.from({length:spec.aircraft?.countMax??0},(_,i)=>{
+      const mesh=fighter(spec.aircraft.kind);mesh.scale.setScalar(spec.aircraft.scale);this.group.add(mesh);
+      return {mesh,position:mesh.position,quaternion:mesh.quaternion,localQuaternion:new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),(i-2)*.06),
+        local:new THREE.Vector3(),relativeVelocity:new THREE.Vector3(),velocity:new THREE.Vector3(),spin:new THREE.Vector3(),state:'inactive',
+        friction:.22+i*.045,tieStrength:2.6+i*.7,tied:true};
     });
-    this.previousVelocity=new THREE.Vector3();this.previousOmega=new THREE.Vector3();this.acceleration=new THREE.Vector3();this.angularAcceleration=new THREE.Vector3();this.inverse=new THREE.Quaternion();
-    this.r=new THREE.Vector3();this.localOmega=new THREE.Vector3();this.localAlpha=new THREE.Vector3();this.force=new THREE.Vector3();this.cross=new THREE.Vector3();this.temp=new THREE.Vector3();
+    this.force=new THREE.Vector3();
   }
   reset(ship,physics){
-    const cfg=this.spec.aircraft;
-    this.previousVelocity.copy(physics.velocity);this.previousOmega.copy(physics.omega);this.splashed=0;
+    const cfg=this.spec.aircraft;this.splashed=0;
     if(!cfg)return;
     const count=cfg.countMin+Math.floor(Math.random()*(cfg.countMax-cfg.countMin+1)),frame=AIRFRAMES[cfg.kind],slots=[];
-    for(let x=-this.spec.length*.37;x<this.spec.length*.28;x+=frame.length*1.3){
-      const z=-this.spec.deckHalfWidthAt(x,-1)+frame.span*.55+2;
+    for(let x=-this.spec.length*.37;x<this.spec.length*.28;x+=frame.length*cfg.scale*1.3){
+      const z=-this.spec.deckHalfWidthAt(x,-1)+frame.span*cfg.scale*.55+2;
       if(this.spec.deckBlocks.some(([x0,x1,z0,z1])=>x+frame.length/2>x0&&x-frame.length/2<x1&&z+frame.span/2>z0&&z-frame.span/2<z1))continue;
-      if([[-1,-1],[-1,1],[1,-1],[1,1]].every(([a,b])=>insideOutline(this.spec.deckOutline,x+a*frame.length*.45,z+b*frame.span*.45)))slots.push([x,z]);
+      if([[-1,-1],[-1,1],[1,-1],[1,1]].every(([a,b])=>insideOutline(this.spec.deckOutline,x+a*frame.length*cfg.scale*.45,z+b*frame.span*cfg.scale*.45)))slots.push([x,z]);
     }
     for(let i=0;i<this.planes.length;i++){
-      const p=this.planes[i];p.mesh.visible=i<count;p.state=i<count?'deck':'inactive';p.relativeVelocity.set(0,0,0);
-      if(i<count){const [x,z]=slots[i];p.local.set(x,deckHeightAt(this.spec,x)+1.1,z);p.mesh.position.copy(p.local).applyQuaternion(ship.quaternion).add(ship.position);p.mesh.quaternion.copy(ship.quaternion);}
+      const p=this.planes[i];p.mesh.visible=i<count;p.state=i<count?'deck':'inactive';p.relativeVelocity.set(0,0,0);p.tied=true;
+      if(i<count){const [x,z]=slots[i];p.local.set(x,deckHeightAt(this.spec,x)+1.1*cfg.scale,z);placeDeckPayload(p,ship);}
     }
   }
   get onDeck(){return this.planes.filter(p=>p.state==='deck').length;}
-  update(dt,ship,physics,field,particles){
-    if(!this.planes.length)return;
-    const inverse=this.inverse.copy(ship.quaternion).invert();
-    this.acceleration.copy(physics.velocity).sub(this.previousVelocity).divideScalar(dt).applyQuaternion(inverse);
-    this.angularAcceleration.copy(physics.omega).sub(this.previousOmega).divideScalar(dt).applyQuaternion(inverse);
-    this.localOmega.copy(physics.omega).applyQuaternion(inverse);
-    this.previousVelocity.copy(physics.velocity);this.previousOmega.copy(physics.omega);
+  update(dt,ship,physics,field,particles,motion){
     for(const p of this.planes){
       if(p.state==='deck'){
-        const r=this.r.copy(p.local).sub(physics.cg),a=this.force.set(0,-9.81,0).applyQuaternion(inverse).sub(this.acceleration);
-        a.sub(this.cross.crossVectors(this.angularAcceleration,r));
-        a.sub(this.cross.crossVectors(this.localOmega,this.temp.crossVectors(this.localOmega,r)));
-        a.sub(this.cross.crossVectors(this.localOmega,p.relativeVelocity).multiplyScalar(2));
-        const slope=deckSlopeAt(this.spec,p.local.x),normal=this.temp.set(-slope,1,0).normalize(),normalAcceleration=a.dot(normal),load=Math.max(0,-normalAcceleration);
-        a.addScaledVector(normal,-normalAcceleration);
-        p.relativeVelocity.addScaledVector(a,dt);const speed=p.relativeVelocity.length(),friction=.16*load*dt;
-        if(speed>0)p.relativeVelocity.multiplyScalar(Math.max(0,1-friction/speed));
-        p.local.addScaledVector(p.relativeVelocity,dt);p.local.y=deckHeightAt(this.spec,p.local.x)+1.1;
-        p.mesh.position.copy(p.local).applyQuaternion(ship.quaternion).add(ship.position);p.mesh.quaternion.copy(ship.quaternion);
-        if(normalAcceleration>0||!insideOutline(this.spec.deckOutline,p.local.x,p.local.z)){
-          p.state='air';p.velocity.copy(p.relativeVelocity).applyQuaternion(ship.quaternion).add(physics.velocity);
-          p.velocity.add(this.cross.crossVectors(physics.omega,this.r.copy(p.mesh.position).sub(physics.position)));p.spin.copy(physics.omega);
-        }
+        const a=motion.acceleration(p.local,p.relativeVelocity,this.force),normalLoad=a.y;
+        // Each aircraft has its own lashing strength, wheel friction and
+        // point acceleration. A failed tie never releases other aircraft.
+        if(p.tied&&(Math.hypot(a.x,a.z)>p.tieStrength||normalLoad>p.tieStrength))p.tied=false;
+        const contact=p.tied?-1:stepDeckPayload(p,dt,this.spec,motion,{friction:p.friction,height:1.1*this.spec.aircraft.scale});
+        placeDeckPayload(p,ship);
+        if(contact>0||!insideOutline(this.spec.deckOutline,p.local.x,p.local.z))releaseDeckPayload(p,ship,physics);
       }else if(p.state==='air'){
-        p.velocity.y-=9.81*dt;p.velocity.multiplyScalar(Math.exp(-.035*dt));p.mesh.position.addScaledVector(p.velocity,dt);
-        const angle=p.spin.length()*dt;if(angle>0)p.mesh.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(this.temp.copy(p.spin).normalize(),angle));
-        const pos=p.mesh.position,sea=field.heightAt(pos.x,pos.z);
+        stepAirPayload(p,dt);const pos=p.position,sea=field.heightAt(pos.x,pos.z);
         if(pos.y-1.1<=sea){
           for(let j=0;j<55;j++){const a=Math.random()*Math.PI*2,s=2+Math.random()*10;particles.spawn(pos.x,sea+.2,pos.z,Math.cos(a)*s,4+Math.random()*10,Math.sin(a)*s,3,1.5,0);}
           p.state='sea';p.mesh.visible=false;this.splashed++;

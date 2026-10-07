@@ -14,15 +14,26 @@ export const ISLANDS=[
   {x:650,z:2380,radius:205,height:72,phase:4.5},
 ];
 const profile=[[-.08,1.08],[0,1],[.03,.997],[.10,.965],[.40,.85],[.75,.52],[1,.025]];
+const fract=v=>v-Math.floor(v),hash=(x,z)=>fract(Math.sin(x*127.1+z*311.7)*43758.5453123);
+function noise(x,z){
+  const ix=Math.floor(x),iz=Math.floor(z),fx=x-ix,fz=z-iz,a=fx*fx*(3-2*fx),b=fz*fz*(3-2*fz);
+  return (hash(ix,iz)*(1-a)+hash(ix+1,iz)*a)*(1-b)+(hash(ix,iz+1)*(1-a)+hash(ix+1,iz+1)*a)*b;
+}
+function relief(x,z,phase){
+  let sum=0,weight=.57,frequency=1;
+  for(let octave=0;octave<5;octave++){sum+=weight*(noise(x*frequency+phase*7,z*frequency-phase*3)-.5);frequency*=2.08;weight*=.47;}
+  return sum;
+}
 export function shoreRadius(I,a){return I.radius*(1+.085*Math.sin(3*a+I.phase)+.045*Math.cos(5*a-I.phase));}
 export function shoreDerivative(I,a){return I.radius*(.255*Math.cos(3*a+I.phase)-.225*Math.sin(5*a-I.phase));}
 export function terrainHeight(I,x,z){
   const dx=x-I.x,dz=z-I.z,r=Math.hypot(dx,dz)/shoreRadius(I,Math.atan2(dz,dx));
+  let height=I.height;
   for(let i=1;i<profile.length;i++){
     const a=profile[i-1],b=profile[i];
-    if(r>=b[1])return I.height*(a[0]+(b[0]-a[0])*(a[1]-r)/(a[1]-b[1]));
+    if(r>=b[1]){height=I.height*(a[0]+(b[0]-a[0])*(a[1]-r)/(a[1]-b[1]));break;}
   }
-  return I.height;
+  return height+I.height*.55*Math.max(0,1-r)**.75*relief(dx/I.radius*4,dz/I.radius*4,I.phase);
 }
 export const islandGLSL=()=>`
 uniform vec4 uIslands[${ISLANDS.length}];uniform float uIslandPhases[${ISLANDS.length}];
@@ -39,22 +50,32 @@ export class Islands {
   constructor(waveUniforms,foamTexture){
     this.group=new THREE.Group();this.group.name='Rocky island archipelago';
     this.uniforms={uIslands:{value:ISLANDS.map(I=>new THREE.Vector4(I.x,I.z,I.radius,I.height))},uIslandPhases:{value:ISLANDS.map(I=>I.phase)}};
-    const rock=new THREE.MeshStandardMaterial({name:'Weathered coastal rock',vertexColors:true,roughness:.94,metalness:.01,flatShading:true});
-    const n=128,foamPos=[],foamUV=[],foamIndices=[];
+    const bumpPixels=new Uint8Array(256*256*4);
+    for(let z=0;z<256;z++)for(let x=0;x<256;x++){const i=(z*256+x)*4,value=Math.round(110+70*relief(x/22,z/22,2));bumpPixels.set([value,value,value,255],i);}
+    const bump=new THREE.DataTexture(bumpPixels,256,256);bump.wrapS=bump.wrapT=THREE.RepeatWrapping;bump.needsUpdate=true;
+    const rock=new THREE.MeshStandardMaterial({name:'Eroded coastal terrain',vertexColors:true,roughness:.94,metalness:.01,bumpMap:bump,bumpScale:.45});
+    const n=128,rings=56,foamPos=[],foamUV=[],foamIndices=[],treeSites=[],rockSites=[];
     for(const I of ISLANDS){
-      const positions=[],colours=[],indices=[];
-      for(let j=0;j<profile.length;j++)for(let i=0;i<=n;i++){
-        const a=i/n*TAU,r=shoreRadius(I,a)*profile[j][1],y=I.height*profile[j][0];
-        positions.push(I.x+Math.cos(a)*r,y,I.z+Math.sin(a)*r);
-        const moss=Math.max(0,Math.sin(a*7+I.phase)*Math.cos(a*13-I.phase))*Math.min(1,Math.max(0,y/15));
-        const variation=.045*Math.sin(a*53+j*1.9)+.03*Math.cos(a*89-j*2.7),wet=1-(1-Math.min(1,Math.max(0,y/9)))*.26;
-        colours.push((.34+variation-moss*.055)*wet,(.36+variation+moss*.015)*wet,(.34+variation-moss*.05)*wet);
-        if(j<profile.length-1&&i<n){const b=j*(n+1)+i;indices.push(b,b+n+1,b+1,b+1,b+n+1,b+n+2);}
+      const positions=[],colours=[],uvs=[],indices=[];
+      for(let j=0;j<=rings;j++)for(let i=0;i<=n;i++){
+        const a=i/n*TAU,r=shoreRadius(I,a)*(.012+1.068*(1-j/rings)),x=I.x+Math.cos(a)*r,z=I.z+Math.sin(a)*r,y=terrainHeight(I,x,z);
+        positions.push(x,y,z);uvs.push(x/55,z/55);
+        const slope=Math.hypot(terrainHeight(I,x+2,z)-terrainHeight(I,x-2,z),terrainHeight(I,x,z+2)-terrainHeight(I,x,z-2))/4;
+        const moss=Math.max(0,1-slope*.95)*Math.min(1,Math.max(0,(y-6)/22))*(.55+.45*noise(x/25,z/25));
+        const variation=.035*(noise(x/9,z/9)-.5),wet=1-(1-Math.min(1,Math.max(0,y/9)))*.28;
+        colours.push((.36+variation-moss*.16)*wet,(.37+variation-moss*.05)*wet,(.34+variation-moss*.18)*wet);
+        if(j<rings&&i<n){const b=j*(n+1)+i;indices.push(b,b+n+1,b+1,b+1,b+n+1,b+n+2);}
       }
-      const centre=positions.length/3;positions.push(I.x,I.height,I.z);colours.push(.32,.34,.31);
-      const top=(profile.length-1)*(n+1);for(let i=0;i<n;i++)indices.push(centre,top+i+1,top+i);
-      const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));geo.setAttribute('color',new THREE.Float32BufferAttribute(colours,3));geo.setIndex(indices);geo.computeVertexNormals();
+      const centre=positions.length/3;positions.push(I.x,terrainHeight(I,I.x,I.z),I.z);colours.push(.32,.35,.27);uvs.push(I.x/55,I.z/55);
+      const top=rings*(n+1);for(let i=0;i<n;i++)indices.push(centre,top+i+1,top+i);
+      const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));geo.setAttribute('color',new THREE.Float32BufferAttribute(colours,3));geo.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));geo.setIndex(indices);geo.computeVertexNormals();
       const land=new THREE.Mesh(geo,rock);land.castShadow=land.receiveShadow=true;this.group.add(land);
+      for(let k=0;k<Math.ceil(I.radius*I.radius*.006);k++){
+        const a=hash(k,I.phase)*TAU,r=I.radius*Math.sqrt(hash(I.phase,k+21))*.97,x=I.x+Math.cos(a)*r,z=I.z+Math.sin(a)*r,y=terrainHeight(I,x,z);
+        const slope=Math.hypot(terrainHeight(I,x+2,z)-y,terrainHeight(I,x,z+2)-y)/2;
+        if(y>7&&y<I.height*.65&&slope<.72&&hash(k+12,I.phase)<.24)treeSites.push({x,y,z,scale:4.5+hash(k+15,I.phase)*4.5,angle:a});
+        else if(y>1&&y<I.height*.8&&hash(k+16,I.phase)<.13)rockSites.push({x,y,z,scale:2.3+hash(k+17,I.phase)*6,angle:a});
+      }
       const base=foamPos.length/3;
       for(let i=0;i<=n;i++)for(const distance of [1.2,20]){
         const a=i/n*TAU,r=shoreRadius(I,a)+distance;
@@ -62,6 +83,20 @@ export class Islands {
         if(i<n&&distance===1.2){const b=base+2*i;foamIndices.push(b,b+1,b+2,b+1,b+3,b+2);}
       }
     }
+    const trunkMat=new THREE.MeshStandardMaterial({color:0x5a4a36,roughness:.96}),leafMat=new THREE.MeshStandardMaterial({color:0x375032,roughness:.94}),boulderMat=new THREE.MeshStandardMaterial({color:0x65716b,roughness:.96,bumpMap:bump,bumpScale:.18});
+    const matrix=new THREE.Matrix4(),q=new THREE.Quaternion(),p=new THREE.Vector3(),scale=new THREE.Vector3();
+    const instances=(geometry,material,sites,transform)=>{
+      const batch=new THREE.InstancedMesh(geometry,material,sites.length);sites.forEach((site,i)=>{
+        transform(site,p,scale);q.setFromAxisAngle(UP,site.angle);matrix.compose(p,q,scale);batch.setMatrixAt(i,matrix);
+        batch.setColorAt(i,new THREE.Color().setScalar(.78+hash(i,site.x)*.32));
+      });batch.castShadow=batch.receiveShadow=true;this.group.add(batch);return batch;
+    };
+    instances(new THREE.CylinderGeometry(.035,.065,.70,9),trunkMat,treeSites,(s,p,k)=>{p.set(s.x,s.y+s.scale*.35,s.z);k.setScalar(s.scale);});
+    for(let layer=0;layer<3;layer++)instances(new THREE.IcosahedronGeometry(.32,1),leafMat,treeSites,(s,p,k)=>{
+      const angle=s.angle+layer*2.1;p.set(s.x+Math.cos(angle)*s.scale*.12,s.y+s.scale*(.60+layer*.11),s.z+Math.sin(angle)*s.scale*.12);k.set(s.scale*.95,s.scale*(1.08-layer*.09),s.scale*.82);
+    });
+    instances(new THREE.DodecahedronGeometry(1,1),boulderMat,rockSites,(s,p,k)=>{p.set(s.x,s.y+s.scale*.29,s.z);k.set(s.scale,s.scale*.7,s.scale*.84);});
+    this.scenery={trees:treeSites.length,rocks:rockSites.length};
     const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(foamPos,3));geo.setAttribute('uv',new THREE.Float32BufferAttribute(foamUV,2));geo.setIndex(foamIndices);
     const mat=new THREE.ShaderMaterial({name:'Wave wash at rock walls',uniforms:{...waveUniforms,uShoreFoam:{value:foamTexture},uShoreNight:{value:0}},transparent:true,depthWrite:false,side:THREE.DoubleSide,
       vertexShader:`${glslWaves()} varying vec2 vUV;varying float vWash;varying vec3 vShore;

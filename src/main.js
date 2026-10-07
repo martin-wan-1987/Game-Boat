@@ -35,6 +35,7 @@ import {RandomSea} from './random-sea.js';
 import {SolidWater} from './solid-water.js';
 import {Islands} from './islands.js';
 import {CarrierAircraft} from './aircraft.js';
+import {DeckMotion} from './deck-payload.js';
 
 /* ------------------------------------------------------------------ *
  * quality presets
@@ -245,9 +246,9 @@ class Game {
   buildShip() {
     const makeActor=({build},visible)=>{
       const mesh=build({quality:this.q.shipDetail});
-      mesh.userData.searchlights=new Searchlights(mesh.userData.vessel);mesh.add(mesh.userData.searchlights.group);
+      mesh.userData.searchlights=new Searchlights(mesh.userData.vessel,mesh);mesh.add(mesh.userData.searchlights.group);
       mesh.visible=visible;this.scene.add(mesh);
-      return [mesh.userData.vessel.id,{mesh,aircraft:new CarrierAircraft(mesh.userData.vessel)}];
+      return [mesh.userData.vessel.id,{mesh,aircraft:new CarrierAircraft(mesh.userData.vessel),cargo:mesh.userData.cargo,deckMotion:new DeckMotion()}];
     };
     this.vessels=Object.fromEntries(FLEET.map(def=>makeActor(def,def.spec.id===this.vesselId)));
     this.rivals=Object.fromEntries(COMBAT_FLEET.map(def=>makeActor(def,false)));
@@ -256,6 +257,7 @@ class Game {
     for(const entry of this.vesselActors){
       entry.physics=new ShipPhysics(entry.mesh.userData.patches,{vessel:entry.mesh.userData.vessel});
       entry.physics.reset(0,0,0);entry.physics.localToWorld(new THREE.Vector3(),entry.mesh.position);
+      entry.deckMotion.reset(entry.physics);
     }
   }
   selectVessel(id) {
@@ -403,7 +405,7 @@ class Game {
     const enemy=this.rivals[enemyDefinition.spec.id];
     enemy.physics.reset(1000,650,Math.PI);enemy.damage.reset();enemy.waterFX.reset();
     enemy.physics.localToWorld(new THREE.Vector3(),enemy.mesh.position);
-    enemy.mesh.quaternion.copy(enemy.physics.quaternion);enemy.aircraft.reset(enemy.mesh,enemy.physics);
+    enemy.mesh.quaternion.copy(enemy.physics.quaternion);enemy.aircraft.reset(enemy.mesh,enemy.physics);enemy.deckMotion.reset(enemy.physics);
     this.setActorVisible(enemy,true);
     this.combat=new CombatSession(this.activeVessel,FLEET_BY_ID[this.vesselId],enemy,enemyDefinition,{
       onPhysics:(actor,dt)=>this.islands.collide(actor.physics,dt),
@@ -435,6 +437,7 @@ class Game {
     this.acc=0;this.field.agitation=1;this.phys.localToWorld(new THREE.Vector3(),this.shipMesh.position);
     this.shipMesh.quaternion.copy(this.phys.quaternion);
     this.activeVessel.aircraft.reset(this.shipMesh,this.phys);
+    this.activeVessel.cargo?.reset();this.activeVessel.deckMotion.reset(this.phys);
     document.getElementById('periscopeView').hidden=true;
     // The rig has been sitting at the world origin (inside the hull) since
     // boot — while the lobby covered the screen that was invisible. Without
@@ -483,7 +486,7 @@ class Game {
   updateSearchlights(){
     let offset=0;
     for(const {mesh} of this.activeActors){
-      const lights=mesh.userData.searchlights;lights.update(this.skySys.night,this.searchlightUniforms,offset);offset+=lights.lamps.length;
+      const lights=mesh.userData.searchlights;lights.update(this.skySys.night,this.searchlightUniforms,offset,this.time);offset+=lights.lamps.length;
     }
     for(let i=offset;i<this.searchlightUniforms.uSearchPosition.value.length;i++)this.searchlightUniforms.uSearchPosition.value[i].w=0;
   }
@@ -819,11 +822,13 @@ class Game {
   updateVessel(entry,dt){
     const {mesh,physics}=entry,parts=mesh.userData;
     physics.localToWorld(new THREE.Vector3(),mesh.position);mesh.quaternion.copy(physics.quaternion);
+    entry.deckMotion.update(dt,mesh,physics);
     if(parts.spin)parts.spin.rotation.y+=dt*.6;
     if(parts.searchRadar)parts.searchRadar.rotation.y+=dt*.9;
     parts.flagAnimate?.(this.time);parts.propulsion.update(dt,physics.throttle,physics.speedKnots,physics.rudderAngle);
     entry.waterFX.update(this.time,dt,this.field,mesh,physics);
-    entry.aircraft.update(dt,mesh,physics,this.field,this.particles);
+    entry.aircraft.update(dt,mesh,physics,this.field,this.particles,entry.deckMotion);
+    entry.cargo?.update(dt,mesh,physics,this.field,this.particles,entry.deckMotion);
   }
 
   hudState() {
@@ -853,6 +858,7 @@ class Game {
   }
 
   render() {
+    for(const entry of this.vesselActors)if(entry.mesh.visible){entry.mesh.userData.weapons.syncTransforms();entry.cargo?.cull(this.camera);}
     this.solidWater.update(this.activeActors.map(a=>a.mesh));
     document.getElementById('periscopeView').hidden=!this.shipMesh.userData.periscope?.mirrorView(this.rig.mode)||this.paused||this.showHelp||!this.hud.el.hud.classList.contains('on');
     this.updateSearchlights();this.ocean.setSun(this.skySys.sunDir,this.skySys.sunLight.color);

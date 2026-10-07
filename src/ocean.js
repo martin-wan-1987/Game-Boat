@@ -244,13 +244,14 @@ export class Ocean {
 
           // ---- fine capillary ripples -----------------------------------
           vec3 gN = normalize(vNrm);
-          vec3 T = normalize(cross(vec3(0.0, 0.0, 1.0), gN));
-          vec3 B = cross(gN, T);
+          vec3 T = normalize(cross(gN, vec3(0.0, 0.0, 1.0)));
+          vec3 B = cross(T, gN);
           float fade = 1.0 - smoothstep(260.0, 2600.0, dist);
           vec3 N = gN;
           if (fade > 0.001) {
             vec2 uv1 = vWorld.xz * 0.055 + vec2(uTime * 0.0110, uTime * 0.0074);
-            vec2 uv2 = vWorld.xz * 0.145 - vec2(uTime * 0.0195, uTime * 0.0138);
+            mat2 rippleFrame = mat2(0.70710678, -0.70710678, 0.70710678, 0.70710678);
+            vec2 uv2 = rippleFrame * vWorld.xz * 0.145 - vec2(uTime * 0.0195, uTime * 0.0138);
             vec3 n1 = texture2D(uRippleNrm, uv1).xyz * 2.0 - 1.0;
             vec3 n2 = texture2D(uRippleNrm, uv2).xyz * 2.0 - 1.0;
             // NB: a third, very LARGE ripple tile was removed here — at
@@ -260,9 +261,10 @@ export class Ocean {
             // sparkle for the bridge and deck rigs.
             vec3 n3 = texture2D(uRippleNrm,
               vWorld.xz * 0.37 + vec2(uTime * 0.031, -uTime * 0.024)).xyz * 2.0 - 1.0;
-            // the second octave's footprint is rotated 45 deg so the two
-            // tiles cannot line up into a visible repeat grid
-            vec2 rot2 = mat2(0.7071, -0.7071, 0.7071, 0.7071) * n2.xy;
+            // Texture coordinates rotate into the ripple frame; gradients
+            // return by its transpose. Rotating the gradient alone leaves
+            // the two sampling grids aligned and repeats the same pattern.
+            vec2 rot2 = transpose(rippleFrame) * n2.xy;
             vec2 rip = n1.xy + rot2 * 0.6 + n3.xy * 0.35;
             N = normalize(gN + (T * rip.x + B * rip.y) * 0.65 * uRippleAmt * fade);
           }
@@ -300,7 +302,12 @@ export class Ocean {
           vec3 H = normalize(uSunDir + V);
           float nh = max(dot(N, H), 0.0);
           float nl = max(dot(N, uSunDir), 0.0), nv = max(dot(N, V), 0.001);
-          float roughness = mix(0.20, 0.10, fade);
+          // Integrate unresolved normal variance over the pixel footprint.
+          // Distance alone misses oblique views, where a near ripple can
+          // still cover a fraction of a pixel and produce a flashing glint.
+          vec3 dNx=dFdx(N),dNy=dFdy(N);
+          float normalVariance=.25*(dot(dNx,dNx)+dot(dNy,dNy));
+          float roughness = sqrt(clamp(pow(mix(0.20,0.10,fade),2.0)+normalVariance,.01,.36));
           float a2 = pow(roughness, 4.0);
           float denominator = nh * nh * (a2 - 1.0) + 1.0;
           float distribution = a2 / (3.14159265 * denominator * denominator);

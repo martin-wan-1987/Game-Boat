@@ -38,7 +38,8 @@ export class Combatant{
     this.collider=entry.mesh.userData.loft.buildMesh(new THREE.MeshBasicMaterial({side:THREE.DoubleSide}),new THREE.MeshBasicMaterial({side:THREE.DoubleSide}));
     entry.physics.steering=COMBAT_RULES.steering;
     const battery=this.battery;battery.reset();
-    for(const m of battery.mounts)m.lastShot=-(m.spec.type==='ciws'?COMBAT_RULES.ciws.interval:this.profile.main.interval);
+    const intervals={main:this.profile.main.interval,ciws:COMBAT_RULES.ciws.interval,secondary:COMBAT_RULES.secondary.interval};
+    for(const m of battery.mounts)m.lastShot=-intervals[m.spec.type];
     this.previous=new THREE.Vector3();this.sync();this.previous.copy(this.physics.position);
   }
   get physics(){return this.entry.physics;}
@@ -115,12 +116,12 @@ export class CombatSession{
     const {profile,battery}=actor,dt=end-start;battery.elapsed=end;
     actor.aimYaw=wrapAngle(actor.aimYaw+(command.yaw??0)*dt*.8);
     actor.aimPitch=THREE.MathUtils.clamp(actor.aimPitch+(command.pitch??0)*dt*.6,-.6,.9);
-    const ciwsWindows=actor.thermal.step(dt,!!command.ciws&&profile.ciwsMounts>0);
     const mainMounts=battery.mounts.filter(m=>m.spec.type==='main');
     const aligned=new Map();
-    for(const m of battery.mounts.filter(m=>m.spec.type==='main'||m.spec.type==='ciws')){
+    const rules={main:profile.main,ciws:COMBAT_RULES.ciws,secondary:COMBAT_RULES.secondary};
+    for(const m of battery.mounts){
       m.root.updateWorldMatrix(true,true);m.muzzles[0].getWorldPosition(m.origin);
-      const type=m.spec.type==='ciws'?'ciws':'shell',r=type==='ciws'?COMBAT_RULES.ciws:profile.main;
+      const type=m.spec.type==='main'?'shell':'ciws',r=rules[m.spec.type];
       const point=leadPoint(m.origin,target.targetPoint(),target.physics.velocity,r.speed);
       const yaw=type==='ciws'?actor.aimYaw+(command.aimYaw??0):command.aimYaw??0;
       const pitch=type==='ciws'?actor.aimPitch+(command.aimPitch??0):command.aimPitch??0;
@@ -128,16 +129,17 @@ export class CombatSession{
       const right=new THREE.Vector3().crossVectors(direction,UP).normalize();direction.applyAxisAngle(right,pitch);
       aligned.set(m,aimTurret(m,m.origin.clone().add(direction),dt,type==='ciws'?4.5:1.4));
     }
+    const defenceReady=battery.mounts.some(m=>m.spec.type!=='main'&&aligned.get(m)&&m.origin.distanceTo(target.targetPoint())<=rules[m.spec.type].range);
+    const ciwsWindows=actor.thermal.step(dt,actor.alive&&target.alive&&!!command.ciws&&defenceReady);
     const ready=mainMounts.every(m=>aligned.get(m)&&start>=m.lastShot+profile.main.interval-1e-8);
     const fireMain=(command.main||actor.mainAuto||actor.salvoRequested)&&(!profile.salvo||ready);
     for(const m of battery.mounts){
-      const ciws=m.spec.type==='ciws',main=m.spec.type==='main';
-      const r=ciws?COMBAT_RULES.ciws:profile.main;
-      const firing=actor.alive&&target.alive&&(ciws?ciwsWindows.length>0:main&&fireMain&&aligned.get(m))&&m.origin.distanceTo(target.targetPoint())<=r.range;
+      const ciws=m.spec.type==='ciws',main=m.spec.type==='main',secondary=m.spec.type==='secondary',r=rules[m.spec.type];
+      const firing=actor.alive&&target.alive&&(main?fireMain:ciwsWindows.length>0)&&aligned.get(m)&&m.origin.distanceTo(target.targetPoint())<=r.range;
       if(firing){
-        const damage=ciws?r.damagePerSecond*r.interval/profile.ciwsMounts:profile.salvo?r.damage/profile.mainBarrels:r.damage;
-        for(const [from,to] of ciws?ciwsWindows:[[0,dt]])fireWindow(m,start+from,start+to,r.interval,at=>{
-          const muzzles=ciws?[m.muzzles[0]]:m.muzzles;
+        const damage=ciws?r.damagePerSecond*r.interval/profile.ciwsMounts:secondary?r.damagePerSecond*r.interval/profile.secondaryBarrels:profile.salvo?r.damage/profile.mainBarrels:r.damage;
+        for(const [from,to] of main?[[0,dt]]:ciwsWindows)fireWindow(m,start+from,start+to,r.interval,at=>{
+          const muzzles=ciws?[m.muzzles[m.shots%m.muzzles.length]]:m.muzzles;
           for(const muzzle of muzzles){muzzle.getWorldPosition(m.origin);this.launch(actor,target,ciws?'ciws':'shell',m.origin,m.direction,{...r,damage,spec:m.spec},at);}
         });
       }

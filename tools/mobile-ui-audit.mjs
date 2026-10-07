@@ -131,6 +131,7 @@ export function setCandidateState({state,ship}){
     g.manualNight=state.startsWith('night-');g.screens.setMode(g.mode);
     g.skySys.setStorm(.42,g.mode==='random'||g.manualNight?1:0);g.meteors.reset();
     g.input.release();g.setCamera(state==='walk'?'walk':'orbit');g.input.walkMode=g.rig.mode==='walk';
+    if(state==='walk')g.rig.walkYaw=g.rig.walkPitch=0;
     g.screens.hideAll();g.hud.show(!['loading','loading-ready','lobby','mode','mode-random','mode-combat','combat-method','combat-lobby','result'].includes(state));g.cockpit.show(false);
     g.phys.anchor.reset();g.tsunami.reset();g.damage.reset();g.shipMesh.userData.periscope?.reset();g.shipMesh.userData.weapons.reset();
     const requestedPanel=state.split('-').at(-1);
@@ -263,6 +264,11 @@ async function touchAudit(page,tiers,ships,output){
   const tap=async selector=>{await flush();const p=await point(selector);await dispatch('touchStart',[{x:p.x,y:p.y,id:1}]);await dispatch('touchEnd');await flush();taps.push({selector,point:{x:p.x,y:p.y}});};
   const panel=async name=>{await tap(`button[data-panel="${name}"]`);record('panel-'+name,await page.evaluate(name=>document.getElementById('hud').dataset.panel===name,name),{name});};
   const sample=()=>page.evaluate(()=>{const g=__game;return {ship:g.vessel.id,panel:document.getElementById('hud').dataset.panel,mode:g.rig.mode,gameMode:g.mode,night:g.manualNight,nightValue:g.skySys.night,lights:g.shipMesh.userData.searchlights.lamps.map(l=>l.light.intensity),theta:g.rig.theta,phi:g.rig.phi,radius:g.rig.radius,walkX:g.rig.walkX,walkZ:g.rig.walkZ,walkYaw:g.rig.walkYaw,walkRun:g.rig.walkRun,keys:[...g.input.keys],contacts:g.input.contacts.size,throttle:g.input.throttle,rudder:g.input.rudder,paused:g.paused,help:g.showHelp,anchor:g.phys.anchor.phase,tier:g.tsunami.tier?.id,screen:g.screens.current,time:g.time};});
+  // Partition the same fixed-step simulation across bounded browser commands.
+  // Historical batteries are too large for a ten-second single evaluation.
+  const advance=async seconds=>{
+    for(let remaining=seconds;remaining>1e-10;){const dt=Math.min(.25,remaining);await page.evaluate(dt=>__game.advance(dt),dt);remaining-=dt;}
+  };
   const canvasPoints=()=>page.evaluate(()=>{
     const {rect:r}=window.__viewport,canvas=__game.renderer.domElement,pts=[];
     for(let y=r.top+14;y<r.bottom-14;y+=16)for(let x=r.left+14;x<r.right-14;x+=16)if(document.elementFromPoint(x,y)===canvas)pts.push({x,y});
@@ -351,7 +357,7 @@ async function touchAudit(page,tiers,ships,output){
       }
       record(`${ship}-weapon-capabilities`,await page.evaluate(()=>document.getElementById('mainFireBtn').hidden===!__game.shipMesh.userData.weapons.hasMain&&document.getElementById('ciwsFireBtn').hidden===!__game.shipMesh.userData.weapons.hasCIWS),capability);
     });
-    if(['yamato','iowa'].includes(ship))await test(`${ship}-broadside-controls`,async()=>{
+    if(await page.evaluate(()=>__game.shipMesh.userData.weapons.hasSalvo))await test(`${ship}-broadside-controls`,async()=>{
       await panel('weapons');
       for(const side of [-1,1]){
         const before=await page.evaluate(()=>__game.shipMesh.userData.weapons.mounts.reduce((n,m)=>n+m.shots,0));
@@ -404,7 +410,8 @@ async function touchAudit(page,tiers,ships,output){
       await dispatch('touchStart',[{x:hold.x,y:hold.y,id:1},{...look,id:2}]);await dispatch('touchMove',[{x:hold.x,y:hold.y,id:1},{x:look.x+20,y:look.y+8,id:2}]);
       await page.waitForFunction(()=>__game.rig.walkVX!==0||__game.rig.walkVZ!==0,undefined,{timeout:5000});
       const during=await sample();await dispatch('touchEnd');await tap('[data-input-action="run"]');const after=await sample();
-      record(`${ship}-walk`,during.keys.includes('w')&&Math.hypot(during.walkX-before.walkX,during.walkZ-before.walkZ)>.001&&Math.abs(during.walkYaw-before.walkYaw)>.01&&after.walkRun!==before.walkRun&&!after.keys.length,{before,during,after});
+      const alignment=await page.evaluate(()=>{const g=__game,r=g.rig,d=g.camera.getWorldDirection(g.camera.position.clone()).applyQuaternion(g.shipMesh.quaternion.clone().invert());return (d.x*r.walkVX+d.z*r.walkVZ)/(Math.hypot(d.x,d.z)*Math.hypot(r.walkVX,r.walkVZ));});
+      record(`${ship}-walk`,during.keys.includes('w')&&Math.hypot(during.walkX-before.walkX,during.walkZ-before.walkZ)>.001&&Math.abs(during.walkYaw-before.walkYaw)>.01&&after.walkRun!==before.walkRun&&!after.keys.length&&alignment>.97,{before,during,after,viewMovementAlignment:alignment});
       await panel('cameras');await tap('[data-cam="orbit"]');await panel('helm');
     });
     await test(`${ship}-pause-help-reset`,async()=>{
@@ -476,7 +483,7 @@ async function touchAudit(page,tiers,ships,output){
     await tap('#toMode');await tap('[data-mode="combat"]');
     record(ship+'-combat-menu',await page.evaluate(()=>__game.screens.current==='combat'&&document.getElementById('onlineCombat').disabled));
     await tap('#chooseAI');
-    record(ship+'-combat-military-filter',await page.evaluate(()=>[...document.querySelectorAll('#combatShipCards [data-ship]')].length===8&&['tanker','pilot','spirit'].every(id=>!document.querySelector('#combatShipCards [data-ship="'+id+'"]'))));
+    record(ship+'-combat-military-filter',await page.evaluate(expected=>JSON.stringify([...document.querySelectorAll('#combatShipCards [data-ship]')].map(e=>e.dataset.ship).sort())===JSON.stringify(expected.sort()),COMBAT_FLEET.map(e=>e.spec.id)));
     await tap('#combatShipCards [data-ship="'+ship+'"]');await tap('#startCombat');
     await page.evaluate(()=>{const g=__game;g.clock.stop();g._govDone=true;g.input.setPanel('helm');const s=g.combat;s.ai.nextDecision=Infinity;s.ai.command={throttle:.5,rudder:.2,main:false,ciws:false,missile:false};});
     record(ship+'-combat-start',await page.evaluate(ship=>__game.mode==='combat'&&__game.combat.player.spec.id===ship&&__game.combat.player.hp===__game.combat.player.profile.health&&__game.combat.actors.every(a=>a.entry.mesh.visible),ship));
@@ -494,26 +501,35 @@ async function touchAudit(page,tiers,ships,output){
       await page.click('#mainFireBtn');
       record(ship+'-main-action-preserves-held-helm',await page.evaluate(()=>__game.input.keys.has('a')));
       await dispatch('touchCancel');
-      await page.evaluate(()=>{const g=__game;if(!g.combat.player.profile.salvo)g.combat.player.mainAuto=true;else g.combat.player.salvoRequested=true;g.advance(3);});
+      await page.evaluate(()=>{const p=__game.combat.player;if(!p.profile.salvo)p.mainAuto=true;else p.salvoRequested=true;});
+      await advance(3);
       record(ship+'-main-live-fire',await page.evaluate(()=>__game.combat.player.shots.shell>0));
+      await page.evaluate(()=>{__game.combat.player.mainAuto=false;});
     }
     if(await page.evaluate(()=>__game.combat.player.profile.ciwsMounts)){
       const fire=await point('#ciwsFireBtn'),helm=await point('#weaponsPanel [data-hold-key="d"]');
       await dispatch('touchStart',[{x:fire.x,y:fire.y,id:1},{x:helm.x,y:helm.y,id:2}]);
-      const before=await page.evaluate(()=>__game.phys.heading);
-      await page.evaluate(()=>__game.advance(.25));
+      const before=await page.evaluate(()=>({heading:__game.phys.heading,shots:__game.combat.player.shots.ciws,time:__game.combat.time}));
+      // Simultaneous helm/fire input must survive physical turret training.
+      // A newly selected side-facing mount cannot fire before it is aligned.
+      for(let elapsed=0;elapsed<2;elapsed+=.25){await advance(.25);if(await page.evaluate(shots=>__game.combat.player.shots.ciws>shots,before.shots))break;}
       const held=await page.evaluate(()=>({keys:[...__game.input.keys],rudder:__game.phys.rudderAngle,heading:__game.phys.heading,shots:__game.combat.player.shots.ciws}));
-      record(ship+'-combat-move-fire',held.keys.includes('v')&&held.keys.includes('d')&&held.rudder>.6&&held.heading>before&&held.shots>0,held);await dispatch('touchCancel');
+      record(ship+'-combat-move-fire',held.keys.includes('v')&&held.keys.includes('d')&&held.rudder>.6&&held.heading>before.heading&&held.shots>before.shots,{before,held});await dispatch('touchCancel');
       for(const key of ['j','l','i','k']){
         const p=await point('#ciwsAim [data-hold-key="'+key+'"]');await dispatch('touchStart',[{x:p.x,y:p.y,id:1}]);await page.evaluate(()=>__game.advance(.2));await dispatch('touchEnd');
       }
       const p=await point('#ciwsAim [data-hold-key="l"]');await dispatch('touchStart',[{x:p.x,y:p.y,id:1}]);await page.evaluate(()=>__game.advance(.2));await dispatch('touchCancel');
       record(ship+'-aim-touch',await page.evaluate(()=>__game.combat.player.aimYaw>.1&&!__game.input.keys.size));await tap('[data-input-action="aim-reset"]');
       record(ship+'-aim-reset-touch',await page.evaluate(()=>__game.combat.player.aimYaw===0&&__game.combat.player.aimPitch===0));
-      await page.evaluate(()=>{__game.combat.player.thermal.reset();__game.combat.player.mainAuto=false;});
-      const hot=await point('#ciwsFireBtn');await dispatch('touchStart',[{x:hot.x,y:hot.y,id:1}]);await page.evaluate(()=>__game.advance(10.02));
-      record(ship+'-overheat-touch',await page.evaluate(()=>__game.combat.player.thermal.locked&&document.getElementById('combatCIWSStatus').textContent.includes('过热')));await dispatch('touchCancel');
-      await page.evaluate(()=>__game.advance(5));record(ship+'-cooldown-recovery',await page.evaluate(()=>!__game.combat.player.thermal.locked));
+      // Train back to the reset aim before measuring ten actual firing seconds.
+      await advance(1);
+      await page.evaluate(()=>{__game.combat.player.thermal.reset();});
+      const hot=await point('#ciwsFireBtn');await dispatch('touchStart',[{x:hot.x,y:hot.y,id:1}]);await advance(10.02);
+      const overheated=await page.evaluate(()=>({locked:__game.combat.player.thermal.locked,heat:__game.combat.player.thermal.heat,remaining:__game.combat.player.thermal.remaining,shots:__game.combat.player.shots.ciws,keys:[...__game.input.keys],status:document.getElementById('combatCIWSStatus').textContent,HP:__game.combat.actors.map(a=>a.hp)}));
+      record(ship+'-overheat-touch',overheated.locked&&overheated.keys.includes('v')&&overheated.status.includes('过热'),overheated);
+      await advance(.25);
+      record(ship+'-overheat-blocks-touch-fire',await page.evaluate(shots=>__game.combat.player.thermal.locked&&__game.combat.player.shots.ciws===shots,overheated.shots));await dispatch('touchCancel');
+      await advance(5);record(ship+'-cooldown-recovery',await page.evaluate(()=>!__game.combat.player.thermal.locked));
     }
     for(const kind of ['cancel','leave','blur','rotate'])await exerciseRelease(kind,ship+'-combat');
     await tap('#utility [data-input-action="help"]');
@@ -559,17 +575,25 @@ export async function auditMobile(task,{pageLabel='p1',output=defaultOutput,vari
   for(const key of ['320x568-portrait:carrier:mode-random','320x568-portrait:pilot:night-waves','375x812-portrait:destroyer:night-helm','synthetic-island-left:carrier:meteor-helm','synthetic-island-right:battleship:night-helm','synthetic-android-hole:destroyer:meteor-stats','568x320-landscape-left:carrier:random-waves'])shotCases.add(key);
   for(const key of ['320x568-portrait:yamato:guns-port-weapons','568x320-landscape-left:iowa:guns-salvo-weapons','375x812-portrait:typhoon:helm','synthetic-island-right:typhoon:submarine-scope-cameras','synthetic-android-hole:spirit:helm'])shotCases.add(key);
   for(const key of ['320x568-portrait:destroyer:combat-method','320x568-portrait:destroyer:combat-lobby','320x568-portrait:destroyer:combat-map','320x568-portrait:iowa:combat-weapons','375x812-portrait:carrier:combat-damaged-helm','synthetic-island-left:yamato:combat-overheated-weapons','synthetic-island-right:typhoon:combat-map','synthetic-android-hole:destroyer:combat-ammo-map','568x320-landscape-left:destroyer:combat-pause','673x841-portrait:liaoning:combat-help','393x852-portrait:iowa:combat-victory','402x874-portrait:yamato:combat-defeat'])shotCases.add(key);
+  for(const key of ['320x568-portrait:icon-of-the-seas:lobby','320x568-portrait:msc-irina:stats','375x812-portrait:ever-fortune:helm','synthetic-island-left:oocl-hong-kong:waves','synthetic-island-right:symphony-of-the-seas:cameras','393x852-portrait:eisenhower:combat-lobby','synthetic-android-hole:type052d:combat-map','568x320-landscape-left:zumwalt:combat-weapons','402x874-portrait:ford:combat-damaged-helm','320x568-portrait:sejong:combat-ammo-map'])shotCases.add(key);
   const combatShips=COMBAT_FLEET.map(e=>e.spec.id);
   requiredCoverage.combatShips=await page.evaluate(expected=>JSON.stringify([...document.querySelectorAll('#combatShipCards [data-ship]')].map(e=>e.dataset.ship).sort())===JSON.stringify(expected.sort()),combatShips);
   const cases=[],shots=[];await writeFile(output+'mobile-layout-cases.jsonl','');
   for(let i=0;i<variants.length;i++){
     const v=variants[i];await applySurface(page,v);
     const firstCase=cases.length;
-    const batch=await page.evaluate(({ships,combatShips,states,setState,measure})=>{
-      const choose=(0,eval)('('+setState+')'),read=(0,eval)('('+measure+')'),cases=[];
-      for(const ship of ships)for(const state of states){if(state.startsWith('combat-')&&!combatShips.includes(ship))continue;choose({state,ship});cases.push({ship,state,...read()});}
-      return cases;
-    },{ships,combatShips,states,setState:setCandidateState.toString(),measure:measureCandidate.toString()});
+    // Full fleet/state coverage is independent of the browser command
+    // boundary. Bound each live-DOM evaluation as the fleet grows, rather
+    // than exceeding Ego's execution deadline or dropping test cases.
+    const batch=[];
+    for(let firstShip=0;firstShip<ships.length;firstShip+=4){
+      const group=await page.evaluate(({ships,combatShips,states,setState,measure})=>{
+        const choose=(0,eval)('('+setState+')'),read=(0,eval)('('+measure+')'),cases=[];
+        for(const ship of ships)for(const state of states){if(state.startsWith('combat-')&&!combatShips.includes(ship))continue;choose({state,ship});cases.push({ship,state,...read()});}
+        return cases;
+      },{ships:ships.slice(firstShip,firstShip+4),combatShips,states,setState:setCandidateState.toString(),measure:measureCandidate.toString()});
+      batch.push(...group);
+    }
     for(const result of batch){
       const {ship,state}=result;cases.push({name:v.name,ship,state,failures:result.failures});
       if(capture&&shotCases.has(`${v.name}:${ship}:${state}`)){await chooseState(page,state,ship);await captureCase(page,output,`${v.name}-${ship}-${state.replace(':','-')}`,result,shots);}
@@ -604,7 +628,7 @@ export async function auditMobile(task,{pageLabel='p1',output=defaultOutput,vari
 /** Reuse only an unchanged game's completed layout evidence. The old report,
  * screenshots, tool revision and failed touch log remain preserved; the new
  * touch run has its own directory and explicit source/tool provenance. */
-export async function verifyMobileTouch(task,{pageLabel='p1',output=defaultOutput}={}){
+export async function verifyMobileTouch(task,{pageLabel='p1',output=defaultOutput,reason='Touch harness corrected with unchanged game source and layout.'}={}){
   if(!output.endsWith('/'))output+='/';
   const report=JSON.parse(await readFile(output+'mobile-ui-audit.json','utf8'));
   const hashes=await sourceHashes();
@@ -628,7 +652,7 @@ export async function verifyMobileTouch(task,{pageLabel='p1',output=defaultOutpu
   report.sourceUnchanged=sameHashes(gameHashes(report.hashes),gameHashes(finalHashes))&&sameHashes(hashes,finalHashes);
   report.automatedStatus=!touch.passed||events.length?'failed':report.sourceUnchanged?'passed':'incomplete';
   report.status=report.automatedStatus==='failed'?'failed':'incomplete';report.platforms.chromiumEmulation='pending-visual-review';
-  report.touchRecheck={directory:runName,toolHash:hashes['tools/mobile-ui-audit.mjs'],reason:'PointerEvent consumption is authoritative; legacy touchmove may be absent below browser movement threshold. Layout code and game sources were unchanged.'};
+  report.touchRecheck={directory:runName,toolHash:hashes['tools/mobile-ui-audit.mjs'],reason};
   await writeFile(output+'mobile-ui-audit.json',JSON.stringify(report,null,2));
   console.log({status:report.status,automatedStatus:report.automatedStatus,reusedLayoutCases:report.cases.length,sourceUnchanged:report.sourceUnchanged,touchChecks:touch.checks.length,touchFailures:touch.checks.filter(c=>!c.pass),events,touchRecheck:report.touchRecheck});
   return report;
@@ -645,6 +669,7 @@ export async function finalizeMobileAudit(output=defaultOutput,{reviewedShots,no
   report.status=failed?'failed':complete?'passed':'incomplete';
   report.platforms.chromiumEmulation=report.status;
   await writeFile(output+'mobile-ui-audit.json',JSON.stringify(report,null,2));
-  await writeFile(output+'README.md',`# Current-candidate mobile audit\n\nChromium emulation: **${report.status}**. iOS / Android runtime system boundaries: **unverified**.\n\n${report.coverage.viewportCases} viewport variants; ${report.coverage.ships.length} fleet entries; ${report.coverage.states.length} states = ${report.coverage.stateCases} applicable layout cases (combat only military ships). ${report.touch.checks.length} actual-input checks.\n\n48 CSS px controls; 8 px action gaps; live text line bounds; unique center/edge hit tests; runtime safe-area injection; CDP multi-touch, throttle, steering, orbit, pinch, deck walking, cancellation, blur-event, viewport rotation, pause/help/reset, and 3-second anchor.\n\nVisual review: ${notes}\n\n${report.limitations.join('\n\n')}\n\nCandidate source unchanged: ${report.sourceUnchanged}. See mobile-ui-audit.json for source hashes, source measurements, failures and per-action evidence.\n`);
+  const conclusion=report.status==='passed'?'通过（Chromium 尺寸模拟、合成遮挡与已列交互范围）':report.status==='failed'?'失败':'未完成';
+  await writeFile(output+'README.md',`# Current-candidate mobile audit\n\nChromium：**${conclusion}**。iOS / Android 真机与官方模拟器的系统边界读取：**未完成**。\n\n${report.coverage.viewportCases} viewport variants; ${report.coverage.ships.length} fleet entries; ${report.coverage.states.length} states = ${report.coverage.stateCases} applicable layout cases (combat only military ships). ${report.touch.checks.length} actual-input checks.\n\n48 CSS px controls; 8 px action gaps; live text line bounds; unique center/edge hit tests; runtime safe-area injection; CDP multi-touch, throttle, steering, orbit, pinch, deck walking, cancellation, blur-event, viewport rotation, pause/help/reset, and 3-second anchor.\n\nVisual review: ${notes}\n\n${report.limitations.join('\n\n')}\n\nCandidate source unchanged: ${report.sourceUnchanged}. See mobile-ui-audit.json for source hashes, source measurements, failures and per-action evidence.\n`);
   console.log({status:report.status,platforms:report.platforms,sourceUnchanged:report.sourceUnchanged,missing});return report.status;
 }

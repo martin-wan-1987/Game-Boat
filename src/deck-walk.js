@@ -7,7 +7,7 @@ import { SHIP } from './carrier-layout.js';
 export const WALK_INSET = { ends: 1.5, rail: 0.9, obstacle: 0.7 };
 const TOL = 1e-8; // metre-scale floating-point boundary comparisons
 export function createDeckWalk(spec) {
-const DECK_OUTLINE=spec.deckOutline,DECK_BLOCKS=spec.deckBlocks,deckHalfWidth=spec.deckHalfWidthAt;
+const DECK_OUTLINE=spec.deckOutline,DECK_BLOCKS=spec.deckBlocks.concat(spec.walkRestrictedAreas??[]),deckHalfWidth=spec.deckHalfWidthAt;
 const xmin = -spec.length / 2 + WALK_INSET.ends;
 const xmax = spec.length / 2 - WALK_INSET.ends;
 const obstacles = DECK_BLOCKS.map(([x0,x1,z0,z1]) => [

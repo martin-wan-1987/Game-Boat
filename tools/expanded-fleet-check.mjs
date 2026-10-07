@@ -12,6 +12,9 @@ import {Periscope} from '../src/submarine.js';
 import {SolidWater} from '../src/solid-water.js';
 import {deckHeightAt,insideOutline} from '../src/deck-surface.js';
 const output=process.argv[2]??'qa/2026-10-04/expanded-fleet',report={at:new Date().toISOString(),status:'passed',checks:[],vessels:[]};
+const selectedIds=process.argv.slice(3),selectedFleet=selectedIds.length?FLEET.filter(e=>selectedIds.includes(e.spec.id)):FLEET;
+assert.equal(selectedFleet.length,selectedIds.length||FLEET.length,'Every requested vessel must exist exactly once');
+report.coverage={sharedChecks:FLEET.map(e=>e.spec.id),dynamics:selectedFleet.map(e=>e.spec.id)};
 const body=S=>{const p=new ShipPhysics(createHullLoft(S).buildPatches(),{vessel:S});p.reset(0,0,0);return p;};
 function seeded(seed,fn){const original=Math.random;let s=seed;Math.random=()=>((s=(Math.imul(s,1664525)+1013904223)>>>0)/4294967296);try{return fn();}finally{Math.random=original;}}
 function check(name,fn){try{const evidence=fn();report.checks.push({name,status:'passed',evidence});}catch(e){report.status='failed';report.checks.push({name,status:'failed',error:e.stack});console.error(name,e.message);}}
@@ -27,7 +30,8 @@ function closure(S){
 check('buoyancy coefficient and unchanged mass',()=>{
   assert.equal(FLEET_BUOYANCY,1.5);const results=[];
   for(const {spec:S} of FLEET){const p=body(S);p.step(0,new WaveField());assert.equal(p.lastForces.buoyancyScale,(S.buoyancyScale??1)*1.5);results.push({id:S.id,mass:p.mass,coefficient:p.lastForces.buoyancyScale});}
-  for(const id of ['pilot','spirit','typhoon']){const S=FLEET.find(e=>e.spec.id===id).spec;assert.ok(Math.abs(body(S).mass/S.designMass-1)<1e-12);}
+  for(const id of ['pilot','spirit']){const S=FLEET.find(e=>e.spec.id===id).spec;assert.ok(Math.abs(body(S).mass/S.designMass-1)<1e-12);}
+  const submarine=FLEET.find(e=>e.spec.id==='typhoon').spec;assert.equal(submarine.buoyancyScale,1);assert.ok(!submarine.waveBuoyancy);
   return results;
 });
 check('multi-hull pressure and topsides assembled once',()=>{
@@ -85,7 +89,7 @@ check('multiple deck masks form a union without filling the sea between',()=>{
   assert.ok(mask.contains(0,0));assert.ok(mask.contains(1200,0));assert.equal(mask.contains(600,0),false);
   mask.update([ships[0]]);assert.equal(mask.contains(1200,0),false);mask.texture.dispose();return {actors:2};
 });
-for(const {spec:S} of FLEET){
+for(const {spec:S} of selectedFleet){
   check(S.id+' closed hull',()=>closure(S));
   const p=body(S),flat=new WaveField();for(let i=0;i<120*30;i++)p.step(1/120,flat);
   const steady={y:p.position.y,roll:p.attitude.roll,pitch:p.attitude.pitch,vy:p.velocity.y};

@@ -9,6 +9,7 @@ export const COMBAT_RULES = Object.freeze({
   gun:{interval:60/40,damage:500,speed:900,range:4500},
   salvo:{interval:5,damage:2000,speed:900,range:4500},
   ciws:{interval:.05,damagePerSecond:200,hotSeconds:10,coolSeconds:5,speed:1100,range:3200},
+  secondary:{interval:2.5,damagePerSecond:30,speed:800,range:3000},
   missile:{interval:1.5,damage:1500,speed:400,range:6500,turnRate:2.4},
   steering:{rudderAt:(_angle,target)=>target,yawRate:.48,yawResponse:20},
 });
@@ -17,6 +18,7 @@ export function combatProfile(entry){
   const main=entry.spec.weapons.filter(w=>w.type==='main');
   return {...hull,mainBarrels:main.reduce((n,w)=>n+w.barrels,0),
     ciwsMounts:entry.spec.weapons.filter(w=>w.type==='ciws').length,
+    secondaryBarrels:entry.spec.weapons.filter(w=>w.type==='secondary').reduce((n,w)=>n+w.barrels,0),
     main:hull.salvo?COMBAT_RULES.salvo:COMBAT_RULES.gun};
 }
 export const wrapAngle=angle=>Math.atan2(Math.sin(angle),Math.cos(angle));

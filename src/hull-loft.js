@@ -55,7 +55,12 @@ function hullSection(t, u) {
   // w0 high -> hard bilge then near-vertical sides: a carrier's hull is a
   // wall-sided box with rounded bilges, not a yacht's soft sections
   const w0 = 0.34;
-  const shape = w0 + (1 - w0) * Math.pow(1 - Math.pow(1 - u, sa), 1 / sb);
+  const section=spec.sectionShape;
+  // A truncated superellipse represents rounded pressure hulls and crowned
+  // decks. The same analytic section feeds mesh, waterline and quadrature.
+  const edge=section&&(u<section.centre?section.bottom:section.top);
+  const q=section&&(u-section.centre)/(u<section.centre?section.centre:1-section.centre)*Math.pow(1-Math.pow(edge,section.power),1/section.power);
+  const shape=section?Math.pow(1-Math.pow(Math.abs(q),section.power),1/section.power):w0+(1-w0)*Math.pow(1-Math.pow(1-u,sa),1/sb);
   const halfW = hb * shape * (1 + flare * u * u * u);
   return { y, halfW };
 }
@@ -64,6 +69,17 @@ function hullPoint(t, u, side, out = new THREE.Vector3()) {
   const { y, halfW } = hullSection(t, u);
   const x = -HALF_L + t * spec.length;
   return out.set(x, y, side * halfW);
+}
+
+// Highest point of the rounded section above a horizontal footprint point.
+// Its upper branch is monotone from maximum beam to the crown edge. Fittings
+// consume this same loft instead of floating above a separate flat deck.
+function topHeightAt(x,z){
+  const t=(x+HALF_L)/spec.length,edge=hullSection(t,1);
+  if(!spec.sectionShape||Math.abs(z)<=edge.halfW)return edge.y;
+  let low=spec.sectionShape.centre,high=1;
+  for(let i=0;i<36;i++){const mid=(low+high)/2;if(hullSection(t,mid).halfW>Math.abs(z))low=mid;else high=mid;}
+  return hullSection(t,(low+high)/2).y;
 }
 
 
@@ -240,6 +256,6 @@ function buildTopsides(){
 }
 
 const buildPatches=(stations=26,ring=14)=>buildShellPatches(stations,ring).concat(buildTopsides());
-return {point:hullPoint,surfaces:[{point:hullPoint,waterlineOutline}],buildMesh:buildHull,waterlineOutline,buildPatches,buildShellPatches,buildTopsides};
+return {point:hullPoint,topHeightAt,surfaces:[{point:hullPoint,waterlineOutline}],buildMesh:buildHull,waterlineOutline,buildPatches,buildShellPatches,buildTopsides};
 }
 function mesh(parent,geo,mat){const m=new THREE.Mesh(geo,mat);m.castShadow=m.receiveShadow=true;parent.add(m);return m;}

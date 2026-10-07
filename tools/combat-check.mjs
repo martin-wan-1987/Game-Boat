@@ -21,11 +21,12 @@ function actor(id,x=0,z=0,heading=0){
 function session(id='destroyer',enemyId='iowa',x=900,z=0){return new CombatSession(actor(id),FLEET_BY_ID[id],actor(enemyId,x,z,Math.PI),FLEET_BY_ID[enemyId],{random:()=>.5});}
 const flat=new WaveField(),quiet={throttle:0,rudder:0,main:false,ciws:false};
 function freezeAI(s){s.ai.update=()=>quiet;s.player.mainAuto=false;}
-check('only eight military entries and explicit health classes',()=>{
-  assert.equal(COMBAT_FLEET.length,8);assert.ok(COMBAT_FLEET.every(e=>e.combat));
-  assert.ok(['tanker','pilot','spirit'].every(id=>!COMBAT_FLEET.some(e=>e.spec.id===id)));
+check('twenty-one military entries and explicit health classes',()=>{
+  assert.equal(COMBAT_FLEET.length,21);assert.ok(COMBAT_FLEET.every(e=>e.combat));
+  assert.ok(['tanker','pilot','spirit','msc-irina','ever-fortune','oocl-hong-kong','icon-of-the-seas','symphony-of-the-seas'].every(id=>!COMBAT_FLEET.some(e=>e.spec.id===id)));
   for(const [id,hp] of [['iowa',12000],['battleship',12000],['yamato',13000],['liaoning',14000]])assert.equal(combatProfile(FLEET_BY_ID[id]).health,hp);
   assert.equal(COMBAT_CLASSES.nimitz.health,15000);assert.equal(COMBAT_CLASSES.ford.health,17000);
+  for(const e of COMBAT_FLEET.filter(e=>['nimitz','ford'].includes(e.combat)))assert.equal(combatProfile(e).health,e.combat==='ford'?17000:15000);
   return COMBAT_FLEET.map(e=>({id:e.spec.id,...combatProfile(e)}));
 });
 check('ordinary automatic gun has exactly forty 500-damage rounds per minute for varied frame partitions',()=>{
@@ -54,10 +55,18 @@ check('CIWS total damage budget is 2000 per ten firing seconds across every moun
   const result=[];
   for(const e of COMBAT_FLEET.filter(e=>combatProfile(e).ciwsMounts)){
     const s=session(e.spec.id),p=s.player;freezeAI(s);
+    // Measure ten seconds of aligned fire, independently of the time needed
+    // to train side-facing historical guns onto the target.
+    for(let i=0;i<240;i++)s.weapons(p,s.enemy,quiet,-2+i/120,-2+(i+1)/120);
     for(let i=0;i<1200;i++){s.weapons(p,s.enemy,{...quiet,ciws:true},i/120,(i+1)/120);}
     near(s.projectiles.filter(x=>x.kind==='ciws').reduce((n,x)=>n+x.damage,0),2000,1e-6);
     assert.equal(p.missiles,p.profile.missiles??0);result.push({id:e.spec.id,mounts:p.profile.ciwsMounts,shots:p.shots.ciws,damage:2000});s.dispose();
   }return result;
+});
+check('defence heat remains cold while every mount is out of range',()=>{
+  const s=session('yamato','iowa',5000);freezeAI(s);
+  for(let i=0;i<1200;i++)s.weapons(s.player,s.enemy,{...quiet,ciws:true},i/120,(i+1)/120);
+  assert.equal(s.player.thermal.heat,0);assert.equal(s.player.shots.ciws,0);s.dispose();return {seconds:10};
 });
 check('thermal integration preserves ten firing / five cooling seconds across partitions and reset',()=>{
   const result=[];

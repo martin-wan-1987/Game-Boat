@@ -129,7 +129,9 @@ export class CameraRig {
     if (eye.y < wy) eye.y = wy;
     cam.position.copy(eye);
     // attitude: ship's heel/pitch carried into the head, then yaw/pitch
-    this._e.set(this.walkPitch, this.walkYaw, sway, 'YXZ');
+    // Walking uses +X as forward; the renderer's camera uses -Z. Convert
+    // that basis once so view heading and movement consume the same yaw.
+    this._e.set(this.walkPitch, this.walkYaw - Math.PI / 2, sway, 'YXZ');
     cam.quaternion.setFromEuler(this._e).premultiply(shipObj.quaternion);
     // a touch of FOV stretch at full run — speed you can feel
     const wantFov = this.fov + gait * gait * 6;

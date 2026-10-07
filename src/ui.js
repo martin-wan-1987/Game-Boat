@@ -124,7 +124,7 @@ export class Screens {
     const combat=mode==='combat';
     $('helpMain').textContent=combat?'切换自动炮 / 请求全主炮齐射':'主炮开火 · 火光、烟雾与后坐力';
     $('helpCIWS').textContent=combat?'长按射击 · 攻击敌舰 / 热量限制':'长按射击 · 自动拦截陨石碎块';
-    $('helpSalvo').textContent=combat?'战列舰：全部主炮齐射':'大和、衣阿华：选舷后全炮齐射';
+    $('helpSalvo').textContent=combat?'战列舰：全部主炮齐射':'战列舰：选舷后全炮齐射';
     $('helpAim').textContent=combat?'J/L 左右、I/K 上下微调近防炮':'长按旋转炮塔；逗号 / 句号选左 / 右舷';
   }
   setNight(on,mode){

@@ -11,9 +11,9 @@ export async function verifyCombatBrowser(page,{output}={}){
  try{
   for(let index=0;index<COMBAT_FLEET.length;index++){
    const id=COMBAT_FLEET[index].spec.id;
-   await page.evaluate(({id,index})=>{
+   await page.evaluate(({id,index,count})=>{
     const g=__game;g.selectVessel(id);const random=Math.random;
-    try{Math.random=()=>(index+.1)/8;g.startGame('combat');}finally{Math.random=random;}
+    try{Math.random=()=>(index+.1)/count;g.startGame('combat');}finally{Math.random=random;}
     g.hud.show(false);g.cockpit.show(false);g.combat.player.salvoRequested=true;
     g.combat.player.mainAuto=!g.combat.player.profile.salvo;g.combat.lock(g.combat.player,g.combat.enemy);
     if(g.combat.player.missiles)g.combat.fireMissile(g.combat.player);
@@ -21,7 +21,7 @@ export async function verifyCombatBrowser(page,{output}={}){
     const canvas=document.createElement('canvas');canvas.width=160;canvas.height=90;const context=canvas.getContext('2d',{willReadFrequently:true});
     const rows=[];window.__combatRender={rows,context,canvas};
     __shaderProbe.phase='combat-'+id;
-   },{id,index});
+   },{id,index,count:COMBAT_FLEET.length});
    // 135 actual rendered frames per vessel; all five camera modes recur.
    for(let batch=0;batch<45;batch++)await page.evaluate(batch=>{
     const g=__game,{context,canvas,rows}=__combatRender;

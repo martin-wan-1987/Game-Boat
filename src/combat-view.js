@@ -11,7 +11,9 @@ export class BattleEffects{
     for(const kind of ['shell','ciws','missile']){
       const capacity=2*Math.max(...COMBAT_FLEET.map(e=>{
         const p=combatProfile(e),r=kind==='ciws'?COMBAT_RULES.ciws:p.main;
-        return kind==='missile'?(p.missiles??0):(Math.ceil(r.range/r.speed/r.interval)+1)*(kind==='ciws'?p.ciwsMounts:p.mainBarrels);
+        const secondary=COMBAT_RULES.secondary;
+        return kind==='missile'?(p.missiles??0):(Math.ceil(r.range/r.speed/r.interval)+1)*(kind==='ciws'?p.ciwsMounts:p.mainBarrels)+
+          (kind==='shell'?(Math.ceil(secondary.range/secondary.speed/secondary.interval)+1)*p.secondaryBarrels:0);
       }));
       const geometry=new THREE.BufferGeometry();
       geometry.setAttribute('position',new THREE.Float32BufferAttribute(new Float32Array(capacity*6),3));

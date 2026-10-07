@@ -5,6 +5,9 @@ import {ringSolid,chamferPlan} from './solid.js';
 import {bakeStatic} from './mesh-bake.js';
 import {deckHeightAt,deckSlopeAt} from './deck-surface.js';
 import {Periscope} from './submarine.js';
+import {createHullLoft} from './hull-loft.js';
+import {carrierFittings} from './nuclear-carriers.js';
+import {modelLabel,latticeMast,radarFaces,funnel,gallery} from './model-fittings.js';
 const TAU=2*Math.PI;
 function label(g,text,x,y,z,w,h,rotation=0){
   const c=document.createElement('canvas');c.width=1024;c.height=256;const ctx=c.getContext('2d');ctx.clearRect(0,0,c.width,c.height);ctx.fillStyle='#d8dedb';ctx.font='bold 165px Arial';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(text,512,135);
@@ -24,8 +27,6 @@ function houbeiDetails(g,M,S){
     const unit=box(g,M.grey,-10,4.15,side*(2.0+i*.75),8.8,1.1,.68);unit.rotation.z=.13;
     box(g,M.dark,-5.6,4.7,side*(2.0+i*.75),.07,.8,.54);
   }
-  const blue=new THREE.MeshStandardMaterial({color:0x607e8f,roughness:.74});
-  for(const side of [-1,1])for(const [x,y,l,h] of [[-2,3.5,6,1.6],[8,3.1,5,.9],[-12,2.9,4,1.0]])box(g,blue,x,y,side*(S.beamWater/2-.08),l,h,.04);
   const spin=mast(g,M,-2,8.1,0,8.2,4.5);
   label(g,S.number,12,2.5,5.5,5,1.5);label(g,S.number,12,2.5,-5.5,5,1.5,Math.PI);
   return {spin};
@@ -45,15 +46,16 @@ function liaoningDetails(g,M,S){
   }
   const k=positions.length-6,front=[positions[k],S.deckY,positions[k+2],positions[k],positions[k+1],positions[k+2],positions[k+3],S.deckY,positions[k+5],positions[k+3],positions[k+4],positions[k+5]],cap=new THREE.BufferGeometry();
   cap.setAttribute('position',new THREE.Float32BufferAttribute(front,3));cap.setAttribute('uv',new THREE.Float32BufferAttribute(uvFor(front),2));cap.setIndex([0,1,2,1,3,2]);cap.computeVertexNormals();mesh(g,cap,M.grey);
-  const paint=new THREE.MeshStandardMaterial({color:0xddd7b3,roughness:.86});
-  for(const z of [-14,10])for(let i=0;i<16;i++){const x=S.ramp.start+4+i*4.3,y=deckHeightAt(S,x)+.04;box(g,paint,x,y,z,3.0,.04,.23).rotation.z=Math.atan(deckSlopeAt(S,x));}
-  for(const side of [-1,1])tube(g,paint,[-139,S.deckY+.05,side>0?11:-11],[53,S.deckY+.05,side>0?-23:-31],.09);
-  for(const x of [-105,-96,-87,-78])tube(g,M.steel,[x,S.deckY+.13,-28],[x+4,S.deckY+.13,4],.065);
-  for(const h of [31,39])box(g,M.dark,-53,h,20,14,2.5,7);
-  for(const side of [-1,1])label(g,'16',-34,29.5,20+side*8,10,5,side<0?Math.PI:0);
-  for(const x of [-77,34])box(g,M.grey,x,S.deckY+.05,27,20,.25,13);
-  for(const x of [-34,-59])mesh(g,new THREE.SphereGeometry(1.5,16,12),M.white,x,44.3,24);
-  const spin=mast(g,M,-45,43,20,20,12);return {spin};
+  carrierFittings(g,M,S);
+  for(const h of S.houses)gallery(g,M,{x:h.x,y:h.y1+.12,z:20-h.w1/2-1,length:h.l1*.9,width:1.4});
+  for(const side of [-1,1])modelLabel(g,'16',-26,30.0,20+side*8.1,10,5,side<0?Math.PI:0);
+  funnel(g,M,{x:-47,z:20,bottom:36,top:49,length:13,width:9});
+  for(const x of [-31,-54])mesh(g,new THREE.SphereGeometry(1.5,20,14),M.white,x,44.5,24);
+  radarFaces(g,M,{x:-6,y:47,z:20,width:4.2,height:3.4,offsetX:4.2,offsetZ:3.5,tilt:.14});
+  box(g,M.grey,-6,43,20,9,8,7);
+  const spin=latticeMast(g,M,{x:-6,y:48,z:20,height:16,width:6.5,radarWidth:7.5});
+  for(const side of [-1,1])for(const x of [-66,-43,-19])tube(g,M.steel,[x,36,20+side*5.7],[x,43,20+side*5.7],.09);
+  return {spin};
 }
 function spiritDetails(g,M,S){
   M.hull.map=M.port.map=null;M.hull.color.set(0xdddccf);M.port.color.set(0xdddccf);M.grey.color.set(0xe2e0d5);
@@ -72,8 +74,6 @@ function spiritDetails(g,M,S){
   return {};
 }
 function yamatoDetails(g,M,S){
-  const wood=new THREE.MeshStandardMaterial({color:0x94806a,roughness:.85});
-  for(let z=-15;z<=15;z+=1.2)box(g,wood,-2,S.deckY+.02,z,173,.035,.75);
   for(const [y,l,w] of [[18.5,32,19],[24.6,25,16],[29.5,21,15],[33.1,20,13]]){
     box(g,M.grey,20,y,0,l,.3,w);rail(g,M.steel,[[20-l/2,-w/2],[20+l/2,-w/2],[20+l/2,w/2],[20-l/2,w/2]],y+.15);
   }
@@ -85,18 +85,21 @@ function yamatoDetails(g,M,S){
   return {spin};
 }
 function typhoonDetails(g,M,S){
+  const loft=createHullLoft(S);
   for(const side of [-1,1])for(let i=0;i<10;i++){
-    const hatch=mesh(g,new THREE.CylinderGeometry(2.4,2.4,.09,20),M.dark,13+i*4.8,S.deckY+.07,side*4.5);
-    box(g,M.steel,13+i*4.8,S.deckY+.13,side*4.5,.1,.04,4.2);
+    const x=13+i*4.8,z=side*4.5,geo=new THREE.CircleGeometry(2.4,32),p=geo.attributes.position;
+    for(let v=0;v<p.count;v++){const xx=x+p.getX(v),zz=z-p.getY(v);p.setXYZ(v,xx,loft.topHeightAt(xx,zz)+.055,zz);}
+    geo.computeVertexNormals();mesh(g,geo,M.dark);
+    tube(g,M.steel,[x,loft.topHeightAt(x,z-2.1)+.08,z-2.1],[x,loft.topHeightAt(x,z+2.1)+.08,z+2.1],.026);
   }
-  for(const x of [-17,-13])tube(g,M.steel,[x,14.4,0],[x,17.4,0],.25);
+  for(const x of [-17,-13])tube(g,M.steel,[x,13.1,0],[x,16.1,0],.25);
   const periscope=new Periscope(S.periscope);g.add(periscope.group);
   for(const side of [-1,1]){
-    const plane=box(g,M.grey,-20,6.5,side*9,9,.4,8);plane.rotation.z=.045;
+    const plane=box(g,M.grey,-20,6.0,side*7.3,9,.4,5.7);plane.rotation.z=.045;
     box(g,M.grey,-78,-1,side*12,7,.5,9);
   }
-  for(let i=0;i<12;i++)box(g,M.dark,-15+i*1.2,14.43,-2,.38,.03,.3);
-  label(g,'941',-14,10.5,4.1,4,2);label(g,'941',-14,10.5,-4.1,4,2,Math.PI);
+  for(let i=0;i<12;i++)box(g,M.dark,-15+i*1.2,13.15,-2,.38,.03,.3);
+  label(g,'941',-14,9.1,3.7,4,2);label(g,'941',-14,9.1,-3.7,4,2,Math.PI);
   return {periscope};
 }
 const none=()=>{};

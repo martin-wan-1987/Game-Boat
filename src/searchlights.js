@@ -35,7 +35,7 @@ vec3 searchSurface(vec3 p,vec3 n,vec3 view){
 }`;}
 
 export class Searchlights {
-  constructor(vessel){
+  constructor(vessel,ship){
     this.group=new THREE.Group();this.group.name='Night searchlights';this.group.userData.dynamic=true;
     const roof=vessel.bridgeRoof,radius=Math.min(.7,roof.width*.065);
     const metal=new THREE.MeshStandardMaterial({color:0x7a8790,roughness:.4,metalness:.5});
@@ -49,15 +49,35 @@ export class Searchlights {
       const lens=new THREE.Mesh(new THREE.CircleGeometry(radius*.85,16),this.lensMaterial);
       lens.position.x=radius*.74;lens.rotation.y=Math.PI/2;mount.add(lens);
       const light=new THREE.SpotLight(COLOUR,0,Math.max(200,vessel.length*2.8),ANGLE,.45,2);
-      light.position.x=radius*.8;
+      light.position.copy(lens.position);
       const target=new THREE.Object3D();target.position.set(light.position.x+1,-.13,side*.055);mount.add(light,target);light.target=target;
       // Intensity, rather than visibility, changes at night, keeping the
       // light count and compiled material variant constant in both modes.
       light.castShadow=false;this.group.add(mount);return {mount,light,target};
     });
+    const redRadius=Math.min(.24,Math.max(.08,vessel.length*.001)),red=new THREE.Color(0xff3324);
+    this.warningMaterial=new THREE.MeshBasicMaterial({color:red,transparent:true,opacity:0,toneMapped:false});
+    // The baked model is the supporting surface. Both legacy custom models
+    // and parametric vessels expose the same roof anchor; no second copy of
+    // their structural solids is needed for facade-mounted fixtures.
+    ship.updateMatrixWorld(true);
+    const bounds=new THREE.Box3().setFromObject(ship),ray=new THREE.Raycaster();
+    this.warnings=SIDES.map(side=>{
+      const fixture=new THREE.Group(),z=side>0?bounds.max.z+1:bounds.min.z-1;
+      ray.set(new THREE.Vector3(roof.x,roof.y-redRadius*.8,z),new THREE.Vector3(0,0,-side));
+      const [surface]=ray.intersectObject(ship,true);
+      fixture.name='Mounted flashing red side beacon';fixture.position.copy(surface.point);fixture.position.z+=side*redRadius*.5;
+      fixture.userData.support=surface.point.toArray();
+      const arm=new THREE.Mesh(new THREE.BoxGeometry(redRadius*.6,redRadius*.6,redRadius*2),metal);arm.position.z=-side*redRadius*.7;fixture.add(arm);
+      const bracket=new THREE.Mesh(new THREE.CylinderGeometry(redRadius*.60,redRadius*.85,redRadius*1.4,12),metal);bracket.position.y=redRadius*.7;fixture.add(bracket);
+      const bulb=new THREE.Mesh(new THREE.SphereGeometry(redRadius,18,12,0,Math.PI*2,0,Math.PI/2),this.warningMaterial);bulb.position.y=redRadius*1.4;fixture.add(bulb);
+      const light=new THREE.PointLight(red,0,18,2);light.position.copy(bulb.position);fixture.add(light);this.group.add(fixture);return {fixture,bulb,light};
+    });
   }
-  update(night,uniforms,offset=0){
+  update(night,uniforms,offset=0,time=0){
     this.lensMaterial.opacity=night;
+    const pulse=Math.pow(Math.max(0,Math.cos(time*Math.PI)),12);
+    this.warningMaterial.opacity=night*(.14+.86*pulse);for(const {light} of this.warnings)light.intensity=night*pulse*24;
     this.group.updateWorldMatrix(true,true);
     this.lamps.forEach(({mount,light,target},i)=>{
       light.intensity=POWER*night;

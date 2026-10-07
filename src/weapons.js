@@ -7,6 +7,7 @@ const UP=new THREE.Vector3(0,1,0),TAU=2*Math.PI;
 const grey=new THREE.MeshStandardMaterial({name:'Weapon haze grey',color:0x8c959b,roughness:.52,metalness:.23});
 const black=new THREE.MeshStandardMaterial({name:'Gun barrels',color:0x333c43,roughness:.37,metalness:.7});
 const white=new THREE.MeshStandardMaterial({name:'CIWS radome',color:0xb9bfc0,roughness:.62});
+const turretGeometry=new Map();
 function mesh(g,geo,mat,x=0,y=0,z=0){const m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);m.castShadow=m.receiveShadow=true;g.add(m);return m;}
 function tube(g,mat,a,b,r){const A=new THREE.Vector3(...a),B=new THREE.Vector3(...b),d=B.clone().sub(A),m=mesh(g,new THREE.CylinderGeometry(r,r,d.length(),12),mat,...A.add(B).multiplyScalar(.5).toArray());m.quaternion.setFromUnitVectors(UP,d.normalize());return m;}
 
@@ -19,7 +20,7 @@ export function buildTurret(S){
   const body=ringSolid([{y:.6,points:chamferPlan(0,0,S.bodyLength,S.width,S.width*.16)},
     {y:.6+S.height,points:chamferPlan(-S.bodyLength*.04,0,S.bodyLength*.83,S.width*.75,S.width*.14)}]);
   mesh(yaw,body.geometry,grey);
-  if(S.type==='ciws'){
+  if(S.type==='ciws'&&!S.openMount){
     const r=S.width*.27,h=S.height*.72;
     mesh(yaw,new THREE.CylinderGeometry(r,r,h,16),white,-S.bodyLength*.16,S.height+h*.37,0);
     mesh(yaw,new THREE.SphereGeometry(r,16,12),white,-S.bodyLength*.16,S.height+h*.87,0);
@@ -29,7 +30,7 @@ export function buildTurret(S){
   pitch.rotation.z=S.type==='ciws'?.08:.055;
   const muzzles=[],barrelRotor=new THREE.Group();barrelRotor.userData.dynamic=true;pitch.add(barrelRotor);
   for(let i=0;i<S.barrels;i++){
-    const ring=S.type==='ciws',angle=i*TAU/S.barrels;
+    const ring=S.type==='ciws'&&S.barrelPattern!=='line',angle=i*TAU/S.barrels;
     const z=ring?Math.sin(angle)*.21:(i-(S.barrels-1)/2)*S.width*.265;
     const y=ring?Math.cos(angle)*.21:0;
     tube(barrelRotor,black,[0,y,z],[S.length,y,z],S.radius);
@@ -37,9 +38,14 @@ export function buildTurret(S){
     const bore=mesh(barrelRotor,new THREE.CircleGeometry(S.radius*.74,12),black,S.length+.004,y,z);bore.rotation.y=Math.PI/2;
     const anchor=new THREE.Group();anchor.position.set(S.length,y,z);barrelRotor.add(anchor);muzzles.push(anchor);
   }
-  if(S.type==='ciws')for(const x of [.4,S.length*.75])tube(barrelRotor,grey,[x,-.27,0],[x,.27,0],.10);
+  if(S.type==='ciws'&&S.rotating!==false)for(const x of [.4,S.length*.75])tube(barrelRotor,grey,[x,-.27,0],[x,.27,0],.10);
   bakeStatic(barrelRotor);bakeStatic(yaw);
-  return {root,yaw,pitch,barrelRotor,muzzles,spec:S};
+  const parts=[];root.traverse(node=>{if(node.isMesh)parts.push(node);});
+  const key=JSON.stringify([S.type,S.width,S.height,S.bodyLength,S.length,S.radius,S.barrels,S.openMount,S.barrelPattern,S.rotating]);
+  const cached=turretGeometry.get(key);
+  if(cached)parts.forEach((part,i)=>{part.geometry.dispose();part.geometry=cached[i];});
+  else turretGeometry.set(key,parts.map(part=>part.geometry));
+  return {root,yaw,pitch,barrelRotor,muzzles,parts,spec:S};
 }
 /** Joint-space aiming shared by meteor defence and ship combat. */
 export function aimTurret(m,point,dt,rate=4.5){
@@ -58,7 +64,7 @@ export function animateTurret(m,time,dt,firing){
   const age=m.shots?time-m.lastShot:Infinity;
   for(const flame of m.flames)flame.update(age);
   if(m.spec.type!=='ciws')m.barrelRotor.position.x=-m.spec.radius*4*Math.exp(-Math.max(0,age)/.24);
-  if(m.spec.type==='ciws'&&firing)m.barrelRotor.rotation.x+=dt*55;
+  if(m.spec.type==='ciws'&&m.spec.rotating!==false&&firing)m.barrelRotor.rotation.x+=dt*55;
 }
 export class WeaponBattery {
   constructor(specs,options={}){
@@ -70,7 +76,28 @@ export class WeaponBattery {
         cadence:1,nextCadence:0,aim:new THREE.Vector3(),localAim:new THREE.Vector3(),origin:new THREE.Vector3(),direction:new THREE.Vector3(),rotation:new THREE.Quaternion()};
     });
     this.group.userData.dynamic=true;this.elapsed=0;
+    // Independent gun joints and muzzle anchors remain the authoritative
+    // pose. Repeated geometry is drawn through one instance buffer per part,
+    // avoiding hundreds of draw calls for full historical AA batteries.
+    const buckets=new Map();
+    for(const m of this.mounts)for(const part of m.parts){
+      const key=part.geometry.id+' / '+part.material.id;
+      if(!buckets.has(key))buckets.set(key,{geometry:part.geometry,material:part.material,parts:[]});
+      buckets.get(key).parts.push(part);part.visible=false;
+    }
+    this.renderBatches=[...buckets.values()].map(({geometry,material,parts})=>{
+      const mesh=new THREE.InstancedMesh(geometry,material,parts.length);mesh.name='Independent weapon poses';mesh.userData.dynamic=true;
+      mesh.castShadow=mesh.receiveShadow=true;mesh.frustumCulled=false;this.group.add(mesh);return {mesh,parts};
+    });
+    this.renderInverse=new THREE.Matrix4();this.renderMatrix=new THREE.Matrix4();this.syncTransforms();
     this.tracers=new Tracers(specs);
+  }
+  syncTransforms(){
+    this.group.updateWorldMatrix(true,true);this.renderInverse.copy(this.group.matrixWorld).invert();
+    for(const {mesh,parts} of this.renderBatches){
+      parts.forEach((part,i)=>mesh.setMatrixAt(i,this.renderMatrix.multiplyMatrices(this.renderInverse,part.matrixWorld)));
+      mesh.instanceMatrix.needsUpdate=true;
+    }
   }
   get hasMain(){return this.mounts.some(m=>m.spec.type==='main'&&m.spec.operable!==false);}
   get hasCIWS(){return this.mounts.some(m=>m.spec.type==='ciws');}
@@ -119,6 +146,7 @@ export class WeaponBattery {
       animateTurret(m,this.elapsed,dt,firing);
     }
     if(mainFired)this.mainPending=false;
+    this.syncTransforms();
     this.tracers.sync();
   }
 }
